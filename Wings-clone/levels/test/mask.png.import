@@ -1,0 +1,14 @@
+[remap]
+
+importer="image"
+type="Image"
+uid="uid://bxqigdkt5v6km"
+path="res://.godot/imported/mask.png-17880803d7c2e2c13f35631a9d7305dd.image"
+
+[deps]
+
+source_file="res://levels/test/mask.png"
+dest_files=["res://.godot/imported/mask.png-17880803d7c2e2c13f35631a9d7305dd.image"]
+
+[params]
+
