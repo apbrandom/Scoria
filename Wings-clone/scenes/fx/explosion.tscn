@@ -1,0 +1,10 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scenes/fx/explosion.gd" id="1_exp"]
+
+[node name="Explosion" type="Node2D"]
+script = ExtResource("1_exp")
+
+[node name="Flash" type="Polygon2D" parent="."]
+color = Color(1, 0.8, 0.3, 0.9)
+polygon = PackedVector2Array(-8, 0, -5.6, -5.6, 0, -8, 5.6, -5.6, 8, 0, 5.6, 5.6, 0, 8, -5.6, 5.6)

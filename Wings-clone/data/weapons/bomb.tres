@@ -1,0 +1,19 @@
+[gd_resource type="Resource" script_class="WeaponData" load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://resources/weapon_data.gd" id="1_weapon"]
+[ext_resource type="PackedScene" path="res://scenes/projectiles/projectile.tscn" id="2_proj"]
+
+[resource]
+script = ExtResource("1_weapon")
+display_name = "Ракетница"
+projectile_scene = ExtResource("2_proj")
+ammo = -1
+reload_time = 1.1
+muzzle_speed = 380.0
+velocity_inherit = 1.0
+gravity_scale = 1.0
+lifetime = 6.0
+damage = 32.0
+blast_radius = 26.0
+terrain_power = 1.0
+selectable = true

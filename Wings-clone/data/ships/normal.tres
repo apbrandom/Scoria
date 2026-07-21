@@ -1,0 +1,7 @@
+[gd_resource type="Resource" script_class="ShipData" format=3 uid="uid://cbf303rnhlxvh"]
+
+[ext_resource type="Script" uid="uid://b36opgdksyxwv" path="res://resources/ship_data.gd" id="1_ship"]
+
+[resource]
+script = ExtResource("1_ship")
+display_name = "default"

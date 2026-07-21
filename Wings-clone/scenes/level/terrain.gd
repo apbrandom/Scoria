@@ -273,7 +273,15 @@ func carve_circle(center: Vector2i, radius: int) -> int:
 
 	if changed > 0:
 		carved.emit(Rect2i(x0, y0, x1 - x0 + 1, y1 - y0 + 1))
-		if immediate_rebuild:
+		# immediate_rebuild пересобирает коллизию сразу — но менять форму StaticBody
+		# НЕЛЬЗЯ во время флаша физических запросов (внутри _integrate_forces,
+		# body_entered, area-колбэков): Godot роняет "Can't change state while
+		# flushing queries". Если carve пришёл из такого колбэка (крэш корабля,
+		# взрыв снаряда), откладываем пересборку на _process даже в immediate-режиме.
+		# Обычные вызовы (бенч, загрузка, спавн) идут вне физ-кадра —
+		# Engine.is_in_physics_frame() там false — и пересобираются сразу, как раньше.
+		# Инвариант: форма коллизии рельефа никогда не меняется внутри флаша запросов.
+		if immediate_rebuild and not Engine.is_in_physics_frame():
 			flush_dirty()
 	return changed
 
@@ -288,7 +296,10 @@ func flush_dirty() -> int:
 
 
 func _process(_delta: float) -> void:
-	if immediate_rebuild or _dirty.is_empty():
+	# В immediate-режиме _dirty обычно пуст (carve пересобрал сразу), сюда не доходим.
+	# Но если carve случился внутри физ-колбэка, пересборка отложена сюда даже в
+	# immediate-режиме (см. carve_circle) — доедаем здесь, вне флаша запросов.
+	if _dirty.is_empty():
 		return
 	var budget := max_chunk_rebuilds_per_frame
 	var done: Array = []
@@ -379,6 +390,59 @@ static func _on_rect_border(a: Vector2, b: Vector2, w: float, h: float) -> bool:
 		return true
 	if is_equal_approx(a.y, b.y) and (is_zero_approx(a.y) or is_equal_approx(a.y, h)):
 		return true
+	return false
+
+
+# ---------------------------------------------------------------- спавн
+
+## Ищет случайную точку, где после расчистки радиуса radius вокруг нет ни
+## одного твёрдого пикселя, и расчищает её. Не полагается на фиксированную
+## точку + carve_circle — carve_circle физически не может сдвинуть класс,
+## у которого CARVABLE=0 (Камень и т.п., см. terrain_palette.gd): если такой
+## класс окажется ровно в точке спавна, "расчистка" там молча ничего не
+## сделает, и появление будет каждый раз замуровано в текстуре. Вместо этого
+## перебираем случайные точки и берём первую, где несдвигаемого твёрдого нет
+## вообще — тогда carve_circle гарантированно домоет всё остальное (обычную
+## разрушаемую породу).
+## margin — отступ от края уровня, px. attempts — сколько точек перебрать,
+## прежде чем сдаться. Возвращает найденную точку (уже расчищенную) или
+## Vector2i(-1, -1), если за attempts попыток ничего не нашлось.
+func find_clear_spawn(radius: int, margin: int = 0, attempts: int = 30) -> Vector2i:
+	var x0 := margin + radius
+	var x1 := maxi(size.x - margin - radius - 1, x0)
+	var y0 := margin + radius
+	var y1 := maxi(size.y - margin - radius - 1, y0)
+	for _i in attempts:
+		var p := Vector2i(randi_range(x0, x1), randi_range(y0, y1))
+		if not _has_unmovable_solid(p, radius):
+			carve_circle(p, radius)
+			flush_dirty()
+			return p
+	return Vector2i(-1, -1)
+
+
+## Есть ли в радиусе center твёрдый пиксель, который carve_circle не может
+## убрать (SOLID=1, но CARVABLE=0 — Камень и подобное). Обычная разрушаемая
+## порода (SOLID=1, CARVABLE=1) не считается — её carve_circle расчистит сам.
+func _has_unmovable_solid(center: Vector2i, radius: int) -> bool:
+	var solid := TerrainPalette.SOLID
+	var carvable := TerrainPalette.CARVABLE
+	var r2 := radius * radius
+	var y0 := maxi(center.y - radius, 0)
+	var y1 := mini(center.y + radius, size.y - 1)
+	var x0 := maxi(center.x - radius, 0)
+	var x1 := mini(center.x + radius, size.x - 1)
+	for y in range(y0, y1 + 1):
+		var dy := y - center.y
+		var dy2 := dy * dy
+		var row := y * size.x
+		for x in range(x0, x1 + 1):
+			var dx := x - center.x
+			if dx * dx + dy2 > r2:
+				continue
+			var c := _class[row + x]
+			if solid[c] != 0 and carvable[c] == 0:
+				return true
 	return false
 
 

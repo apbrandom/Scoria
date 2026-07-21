@@ -1,0 +1,67 @@
+[gd_scene load_steps=7 format=3]
+
+[ext_resource type="Script" path="res://scenes/ship/ship.gd" id="1_ship"]
+
+[sub_resource type="CircleShape2D" id="CircleShape2D_ship"]
+radius = 7.0
+
+[sub_resource type="Gradient" id="Gradient_thrust_shape"]
+offsets = PackedFloat32Array(0, 1)
+colors = PackedColorArray(1, 1, 1, 1, 1, 1, 1, 0)
+
+[sub_resource type="GradientTexture2D" id="GradientTexture2D_thrust"]
+gradient = SubResource("Gradient_thrust_shape")
+width = 16
+height = 16
+fill = 1
+fill_from = Vector2(0.5, 0.5)
+
+[sub_resource type="Gradient" id="Gradient_thrust_color"]
+offsets = PackedFloat32Array(0, 0.4, 1)
+colors = PackedColorArray(1, 1, 0.8, 1, 1, 0.5, 0.1, 0.9, 1, 0.15, 0.05, 0)
+
+[sub_resource type="ParticleProcessMaterial" id="ParticleProcessMaterial_thrust"]
+direction = Vector3(0, 1, 0)
+spread = 18.0
+initial_velocity_min = 80.0
+initial_velocity_max = 160.0
+gravity = Vector3(0, 60, 0)
+damping_min = 40.0
+damping_max = 90.0
+scale_min = 0.6
+scale_max = 1.4
+color_ramp = SubResource("Gradient_thrust_color")
+turbulence_enabled = true
+turbulence_noise_strength = 4.0
+turbulence_noise_scale = 3.0
+turbulence_influence_min = 0.3
+turbulence_influence_max = 0.6
+
+[node name="Ship" type="RigidBody2D"]
+mass = 1.0
+gravity_scale = 1.0
+contact_monitor = true
+max_contacts_reported = 4
+continuous_cd = 2
+linear_damp = 0.5
+lock_rotation = true
+script = ExtResource("1_ship")
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="."]
+shape = SubResource("CircleShape2D_ship")
+
+[node name="Visual" type="Polygon2D" parent="."]
+color = Color(0.6, 0.9, 1, 1)
+polygon = PackedVector2Array(0, -6.6, 4.2, 4.5, 0, 1.8, -4.2, 4.5)
+
+[node name="Muzzle" type="Marker2D" parent="."]
+position = Vector2(0, -12)
+
+[node name="Thrust" type="GPUParticles2D" parent="."]
+position = Vector2(0, 12)
+emitting = false
+amount = 48
+lifetime = 0.35
+local_coords = false
+texture = SubResource("GradientTexture2D_thrust")
+process_material = SubResource("ParticleProcessMaterial_thrust")

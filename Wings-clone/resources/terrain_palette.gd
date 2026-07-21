@@ -70,13 +70,18 @@ static var CARVABLE := PackedByteArray([
 ])
 
 ## Множитель радиуса воронки по классу.
+## NORMAL = "Земля" в текущем 3-материальном концепте (notes/terrain_materials.md):
+## основной разрушаемый рельеф, крошится чуть охотнее номинала (1.3, а не 1.0) —
+## это и есть "сыпучесть" из концепции. INDESTRUCTIBLE = "Камень" пока абсолютно
+## неубиваем; нюанс "ракета немного скалывает поверхность" — открытый вопрос,
+## решаем при работе над Камнем, не трогаем сейчас.
 static var CARVE_SCALE := PackedFloat32Array([
 	0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
 	1.0, # EXPLOSIVE
-	0.0, # INDESTRUCTIBLE
+	0.0, # INDESTRUCTIBLE — "Камень"
 	1.6, # SOFT
 	1.0, # BURNING
-	1.0, # NORMAL
+	1.3, # NORMAL — "Земля"
 	1.0, # BASE
 	0.0, # BASE_INDESTRUCTIBLE
 	1.0, # BASE_TEAM
@@ -106,6 +111,62 @@ static var CARVE_SCALE := PackedFloat32Array([
 
 ## Класс, назначаемый непрозрачным пикселям, когда маска не задана.
 @export var default_solid_class: Cls = Cls.NORMAL
+
+## Урон кораблю при столкновении с материалом — по классам, но НЕ static var
+## (в отличие от SOLID/CARVABLE/CARVE_SCALE выше): это редкое событие, не
+## пиксельный горячий цикл, поэтому Inspector-удобство важнее скорости
+## индексирования. Самому менять: FileSystem -> data/terrain/wings_classes.tres
+## -> клик -> группа "Столкновение корабля" справа.
+##
+## Модель — порог + линейный рост сверх него, а не жёстко фиксированное число:
+## ниже порога — 0 урона совсем (PvP-ощущение "мягкое касание безопасно"),
+## на пороге — *_crash_damage (опорная точка, откалиброванная по ощущениям),
+## выше — растёт пропорционально избытку скорости (реальная физика удара, а
+## не выдуманное число). Вода отдельного порога не имеет и не нуждается — она
+## не твёрдая (SOLID=0 выше), физически столкнуться с ней нельзя.
+@export_group("Столкновение корабля")
+## "Земля" (Cls.NORMAL) — порог скорости, px/с. Ниже — удар безопасен.
+@export_range(0.0, 1000.0, 5.0, "suffix:px/с") var dirt_crash_speed: float = 250.0
+## "Земля" — урон РОВНО на пороге, hp. Опорная точка для dirt_crash_rate.
+@export_range(0.0, 50.0, 0.5) var dirt_crash_damage: float = 1.0
+## "Земля" — рост урона за каждую единицу скорости сверх порога, hp/(px/с).
+## По умолчанию dirt_crash_damage/dirt_crash_speed — "в том же порядке", что
+## и опорная точка, но можно раскрутить круче или положе отдельно от базы.
+@export_range(0.0, 1.0, 0.001) var dirt_crash_rate: float = 0.004
+## "Камень" (Cls.INDESTRUCTIBLE) — порог заметно ниже: камень не крошится,
+## поэтому весь удар достаётся кораблю, а не рельефу.
+@export_range(0.0, 1000.0, 5.0, "suffix:px/с") var stone_crash_speed: float = 100.0
+## "Камень" — урон РОВНО на пороге, hp. Заметно выше земли за тот же смысл удара.
+@export_range(0.0, 50.0, 0.5) var stone_crash_damage: float = 3.0
+## "Камень" — рост урона сверх порога. Круче земли: камень не гасит удар вообще.
+@export_range(0.0, 1.0, 0.001) var stone_crash_rate: float = 0.03
+
+
+## Порог скорости (px/с), с которого столкновение с классом cls вообще
+## что-то значит. Отдельно от crash_damage() — нужен и сам по себе, чтобы
+## посчитать радиус кратера от превышения (см. Ship._carve_crash_site).
+func crash_speed_threshold(cls: int) -> float:
+	if cls == Cls.INDESTRUCTIBLE:
+		return stone_crash_speed
+	return dirt_crash_speed
+
+
+## Урон при ударе о класс cls на скорости speed. 0 ниже порога, иначе
+## база (в точности на пороге) плюс линейный рост от превышения. Классы, для
+## которых профиль ещё не решён отдельно (SOFT, BASE, EXPLOSIVE — см.
+## terrain_materials.md), используют профиль Земли как безопасный дефолт,
+## а не 0 урона: непродуманный материал не должен оказаться неуязвимым
+## только потому, что до него не дошли руки.
+func crash_damage(cls: int, speed: float) -> float:
+	var threshold := crash_speed_threshold(cls)
+	if speed < threshold:
+		return 0.0
+	var base := dirt_crash_damage
+	var rate := dirt_crash_rate
+	if cls == Cls.INDESTRUCTIBLE:
+		base = stone_crash_damage
+		rate = stone_crash_rate
+	return base + (speed - threshold) * rate
 
 
 static func class_title(cls: int) -> String:

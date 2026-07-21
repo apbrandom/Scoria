@@ -1,0 +1,19 @@
+[gd_resource type="Resource" script_class="WeaponData" load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://resources/weapon_data.gd" id="1_weapon"]
+[ext_resource type="PackedScene" path="res://scenes/projectiles/projectile.tscn" id="2_proj"]
+
+[resource]
+script = ExtResource("1_weapon")
+display_name = "Пулемёт"
+projectile_scene = ExtResource("2_proj")
+ammo = -1
+reload_time = 0.15
+muzzle_speed = 900.0
+velocity_inherit = 1.0
+gravity_scale = 0.0
+lifetime = 2.0
+damage = 6.0
+blast_radius = 3.0
+terrain_power = 0.3
+selectable = true

@@ -1,0 +1,23 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://scenes/projectiles/projectile.gd" id="1_proj"]
+
+[sub_resource type="CircleShape2D" id="CircleShape2D_proj"]
+radius = 2.0
+
+[node name="Projectile" type="RigidBody2D"]
+contact_monitor = true
+max_contacts_reported = 1
+continuous_cd = 2
+lock_rotation = true
+script = ExtResource("1_proj")
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="."]
+shape = SubResource("CircleShape2D_proj")
+
+[node name="Visual" type="Polygon2D" parent="."]
+color = Color(1, 0.9, 0.3, 1)
+polygon = PackedVector2Array(0, -4, 1.6, 3, -1.6, 3)
+
+[node name="Lifetime" type="Timer" parent="."]
+one_shot = true
