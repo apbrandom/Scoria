@@ -1,7 +1,12 @@
 ## Диагностика боевого пути в РЕАЛЬНЫХ условиях: снаряд рождает взрыв из
-## body_entered (физический колбэк), а взрыв внутри дёргает carve рельефа и
-## space-запрос по кораблям. Тест_ship №7 создаёт взрыв ВНЕ колбэка и потому не
-## ловит "Can't change state while flushing queries". Здесь — как в игре.
+## body_entered (физический колбэк), а взрыв внутри дёргает carve рельефа,
+## space-запрос по кораблям И спавн декоративных обломков (Terrain.
+## spawn_weapon_debris, scenes/fx/terrain_debris.gd). Тест_ship №7/№12 создают
+## взрыв ВНЕ колбэка (напрямую через add_child(Explosion)) и потому НЕ ловят
+## "Can't change state while flushing queries" — ровно так уже ловился баг с
+## обломками (add_child нового RigidBody2D внутри body_entered падал с этой
+## ошибкой, пока не завёл call_deferred в Terrain._spawn_debris). Здесь — как
+## в игре, единственный тест, что реально проходит через body_entered.
 ## Запуск: godot --headless --path Wings-clone res://tools/diag_combat.tscn
 extends Node2D
 
@@ -44,5 +49,6 @@ func _ready() -> void:
 		solid_before, solid_after,
 		"сработал" if solid_after < solid_before else "НЕ сработал"])
 	print("  снарядов осталось в дереве: %d" % get_tree().get_nodes_in_group("projectiles").size())
+	print("  обломков заспавнено (через очередь _pending_debris/_process): %d (ожидалось 3..8)" % terrain._debris.size())
 	print("=== диагностика завершена (ищи ERROR выше по логу) ===")
 	get_tree().quit()

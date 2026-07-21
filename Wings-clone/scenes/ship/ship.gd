@@ -225,6 +225,12 @@ func _integrate_forces(state: PhysicsDirectBodyState2D) -> void:
 	crashed.emit(speed)
 	take_damage(terrain.palette.crash_damage(cls, speed))
 	_carve_crash_site(terrain, impact_pos, speed - threshold)
+	# Пыль от удара корпусом — декоративный слой (см. scenes/fx/terrain_debris.gd),
+	# срабатывает при ЛЮБОМ засчитанном столкновении, даже по Камню (который не
+	# крошится): удар сам по себе источник пыли, не только выбитая порода —
+	# в отличие от оружейных обломков (см. Explosion._carve_terrain), которые
+	# идут только если carve реально что-то выбил.
+	terrain.spawn_crash_debris(impact_pos, cls)
 
 
 ## Небольшой кратер в месте удара о рельеф — только если там вообще есть что

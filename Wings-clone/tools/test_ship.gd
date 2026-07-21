@@ -287,6 +287,12 @@ func _run() -> void:
 			if spawn_terrain.is_solid_at(found + offset):
 				clear = false
 		_check("вокруг найденного места нет твёрдого", clear, "found=%s" % found)
+	# Terrain._ready() сам добавляет себя в группу "terrain" (см. terrain.gd) —
+	# spawn_terrain никогда явно add_to_group() не звал (find_clear_spawn() группу
+	# не использует), но авто-вступление всё равно случилось. Не уходим —
+	# get_first_node_in_group("terrain") в секции 12 подхватил бы ЭТОТ террейн
+	# (он старше всех фикстур той секции), а не актуальный.
+	spawn_terrain.remove_from_group("terrain")
 
 	# 11. GameRules — autoload правил матча реально влияет на корабль (шов меню Options,
 	#     architecture §5, devlog §17). Что дефолт нейтрален, уже доказано тем, что
@@ -333,3 +339,251 @@ func _run() -> void:
 			and is_equal_approx(GameRules.air_resistance_scale, 1.0)
 			and is_equal_approx(GameRules.ship_strength, 1.0)
 			and is_equal_approx(GameRules.reload_time_scale, 1.0), "")
+
+	# 12. Обломки: декоративный RigidBody2D-слой поверх попиксельной системы (см.
+	#     terrain_debris.gd, Terrain.spawn_weapon_debris/spawn_crash_debris). Свежие
+	#     terrain-фикстуры на новых мировых координатах — не переиспользуем terrain/
+	#     stone_terrain из секций 7-9, у тех уже есть накопленные обломки от
+	#     собственных столкновений; проверяем ДЕЛЬТАМИ, а не абсолютными числами.
+	# stone_terrain из секции 9 группу "terrain" не покидал (там это было не
+	# нужно) — уходим сами, иначе get_first_node_in_group("terrain") ниже мог бы
+	# зацепить его вместо актуальной фикстуры этой секции.
+	stone_terrain.remove_from_group("terrain")
+
+	# 12a. Взрыв в разрушаемую породу — 3..8 обломков.
+	var debris_terrain := Terrain.new()
+	debris_terrain.palette = PALETTE
+	debris_terrain.position = Vector2(40000, 40000)
+	add_child(debris_terrain)
+	var debris_vis := Image.create(300, 300, false, Image.FORMAT_RGBA8)
+	debris_vis.fill(Color(0.5, 0.3, 0.1, 1.0))
+	debris_terrain.load_level(debris_vis)
+	debris_terrain.add_to_group("terrain")
+	await _step(1)
+
+	var before_weapon := debris_terrain._debris.size()
+	var exp2: Explosion = EXPLOSION_SCENE.instantiate()
+	exp2.global_position = debris_terrain.position + Vector2(150, 150)
+	exp2.blast_radius = 20.0
+	exp2.terrain_power = 1.0
+	exp2.damage = 0.0
+	add_child(exp2)
+	await _step(1)
+	var weapon_spawned := debris_terrain._debris.size() - before_weapon
+	_check("взрыв в разрушаемую породу даёт 3..8 обломков",
+		weapon_spawned >= 3 and weapon_spawned <= 8, "заспавнено=%d" % weapon_spawned)
+
+	# 12b. Взрыв в неразрушаемый Камень (changed=0) — обломков нет вовсе.
+	debris_terrain.remove_from_group("terrain")
+	var stone_debris_terrain := Terrain.new()
+	stone_debris_terrain.palette = PALETTE
+	stone_debris_terrain.position = Vector2(50000, 50000)
+	add_child(stone_debris_terrain)
+	var stone_debris_vis := Image.create(300, 300, false, Image.FORMAT_RGBA8)
+	stone_debris_vis.fill(Color(0.5, 0.5, 0.5, 1.0))
+	var stone_debris_mask := Image.create(300, 300, false, Image.FORMAT_RGBA8)
+	stone_debris_mask.fill(PALETTE.get_mask_color(TerrainPalette.Cls.INDESTRUCTIBLE))
+	stone_debris_mask.fill_rect(Rect2i(80, 0, 40, 180), PALETTE.get_mask_color(TerrainPalette.Cls.EMPTY))
+	stone_debris_terrain.load_level(stone_debris_vis, stone_debris_mask)
+	stone_debris_terrain.add_to_group("terrain")
+	await _step(1)
+
+	var before_stone := stone_debris_terrain._debris.size()
+	var exp3: Explosion = EXPLOSION_SCENE.instantiate()
+	exp3.global_position = stone_debris_terrain.position + Vector2(200, 100)  # вне шахты, сплошной камень
+	exp3.blast_radius = 20.0
+	exp3.terrain_power = 1.0
+	exp3.damage = 0.0
+	add_child(exp3)
+	await _step(1)
+	_check("взрыв в неразрушаемый Камень не даёт обломков (changed=0)",
+		stone_debris_terrain._debris.size() == before_stone,
+		"было=%d стало=%d" % [before_stone, stone_debris_terrain._debris.size()])
+
+	# 12c. Столкновение корабля с Землёй на скорости — 1..3 обломка (пыль),
+	#      заметно меньше взрыва. СВОЙ terrain, а не переиспользуем debris_terrain
+	#      из 12a: тот уже несёт 8 обломков со случайным временем жизни 0.8-1.6 с, и
+	#      за 120 физ-кадров (2 с) ожидания крэша часть из них успела бы истечь —
+	#      "до/после" на общем terrain дало бы отрицательную/зашумлённую дельту.
+	stone_debris_terrain.remove_from_group("terrain")
+	var crash_land_terrain := Terrain.new()
+	crash_land_terrain.palette = PALETTE
+	crash_land_terrain.position = Vector2(80000, 80000)
+	add_child(crash_land_terrain)
+	var crash_land_vis := Image.create(300, 300, false, Image.FORMAT_RGBA8)
+	crash_land_vis.fill(Color(0.5, 0.3, 0.1, 1.0))
+	crash_land_terrain.load_level(crash_land_vis)
+	await _step(1)
+	var shaft2 := crash_land_terrain.position + Vector2(250, 90)
+	crash_land_terrain.carve_circle(Vector2i(crash_land_terrain.to_local(shaft2)), 100)
+	crash_land_terrain.flush_dirty()
+
+	var before_crash := crash_land_terrain._debris.size()
+	var crasher2 := _make_ship()
+	await _step(1)
+	crasher2.respawn(shaft2 + Vector2(0, -70))
+	var crash2_speed := [-1.0]
+	crasher2.crashed.connect(func(v: float): crash2_speed[0] = v)
+	# Ждём удара покадрово и останавливаемся СРАЗУ по факту (а не фиксированные
+	# 120 кадров вслепую): время жизни обломка случайное 0.8-1.6 с (48-96 кадров,
+	# см. debris_lifetime_min/max) — если бы удар пришёлся рано, а мы всё равно
+	# досиживали фиксированное окно, обломок успевал бы истечь ДО проверки, и
+	# "заспавнено=0" означало бы "уже не там", а не "не появился" (ровно так и
+	# ловилось нестабильно, пока тест был на фиксированном большом ожидании).
+	for _i in 150:
+		await get_tree().physics_frame
+		if crash2_speed[0] >= 0.0:
+			break
+	await _step(3)  # дать _process() продренажить _pending_debris следом за ударом
+	var crash_spawned := crash_land_terrain._debris.size() - before_crash
+	_check("корабль реально врезался в Землю за 150 кадров",
+		crash2_speed[0] >= 0.0, "скорость удара=%.0f (−1 = не врезался)" % crash2_speed[0])
+	_check("столкновение с землёй даёт 1..3 обломка (пыль)",
+		crash_spawned >= 1 and crash_spawned <= 3, "заспавнено=%d" % crash_spawned)
+	crash_land_terrain.remove_from_group("terrain")
+
+	# 12d. Столкновение с Камнем ТОЖЕ поднимает пыль, хотя камень не крошится —
+	#      удар корпусом сам по себе источник пыли, не только выбитая порода.
+	#      Свой terrain по той же причине, что и 12c (не stone_debris_terrain из 12b).
+	var crash_stone_terrain := Terrain.new()
+	crash_stone_terrain.palette = PALETTE
+	crash_stone_terrain.position = Vector2(90000, 90000)
+	add_child(crash_stone_terrain)
+	var crash_stone_vis := Image.create(300, 300, false, Image.FORMAT_RGBA8)
+	crash_stone_vis.fill(Color(0.5, 0.5, 0.5, 1.0))
+	var crash_stone_mask := Image.create(300, 300, false, Image.FORMAT_RGBA8)
+	crash_stone_mask.fill(PALETTE.get_mask_color(TerrainPalette.Cls.INDESTRUCTIBLE))
+	crash_stone_mask.fill_rect(Rect2i(80, 0, 40, 180), PALETTE.get_mask_color(TerrainPalette.Cls.EMPTY))
+	crash_stone_terrain.load_level(crash_stone_vis, crash_stone_mask)
+	crash_stone_terrain.add_to_group("terrain")
+	await _step(1)
+
+	var before_stone_crash := crash_stone_terrain._debris.size()
+	var stone_crasher2 := _make_ship()
+	await _step(1)
+	stone_crasher2.respawn(crash_stone_terrain.position + Vector2(100, 10))
+	var stone_crash2_speed := [-1.0]
+	stone_crasher2.crashed.connect(func(v: float): stone_crash2_speed[0] = v)
+	# Останавливаемся сразу по факту удара, не досиживаем фиксированное окно —
+	# та же причина, что и в 12c: время жизни обломка случайное (0.8-1.6 с), и
+	# ранний удар + слепое долгое ожидание давали ложные "заспавнено=0" (обломок
+	# уже истёк к моменту проверки, хотя реально появлялся) — воспроизводилось
+	# нестабильно, пока тест не начал проверять сразу после самого удара.
+	for _i in 150:
+		await get_tree().physics_frame
+		if stone_crash2_speed[0] >= 0.0:
+			break
+	await _step(3)  # дать _process() продренажить _pending_debris следом за ударом
+	var stone_crash_spawned := crash_stone_terrain._debris.size() - before_stone_crash
+	# Проверяем и сам факт столкновения (сигнал crashed), и обломки отдельно — если
+	# заспавнено=0 из-за того, что удар вообще не засчитался (а не баг обломков),
+	# эта проверка укажет на причину точно, а не спишет всё на debris-логику.
+	_check("корабль реально врезался в Камень за 150 кадров",
+		stone_crash2_speed[0] >= 0.0, "скорость удара=%.0f (−1 = не врезался)" % stone_crash2_speed[0])
+	_check("столкновение с камнем тоже даёт пыль, хоть камень не крошится",
+		stone_crash_spawned >= 1 and stone_crash_spawned <= 3, "заспавнено=%d" % stone_crash_spawned)
+	crash_stone_terrain.remove_from_group("terrain")
+
+	# 12e. Жёсткий кап: max_debris держит потолок, старые вытесняются (FIFO).
+	var cap_terrain := Terrain.new()
+	cap_terrain.palette = PALETTE
+	cap_terrain.position = Vector2(60000, 60000)
+	cap_terrain.max_debris = 5
+	add_child(cap_terrain)
+	var cap_vis := Image.create(200, 200, false, Image.FORMAT_RGBA8)
+	cap_vis.fill(Color(0.5, 0.3, 0.1, 1.0))
+	cap_terrain.load_level(cap_vis)
+	await _step(1)
+
+	for _i in 4:
+		cap_terrain.spawn_weapon_debris(cap_terrain.position + Vector2(100, 100), TerrainPalette.Cls.NORMAL)
+	await _step(1)  # спавн реально происходит в _process() (см. terrain.gd) — дать кадр
+	_check("жёсткий кап держит max_debris обломков одновременно",
+		cap_terrain._debris.size() == 5, "обломков=%d (кап=5)" % cap_terrain._debris.size())
+
+	# 12f. Слой/маска: обломок не должен физически сталкиваться ни с кораблём,
+	#      ни с рельефом (декоративный слой, см. terrain_debris.gd). Достаточно
+	#      RigidBody2D — collision_layer/mask объявлены в CollisionObject2D, а
+	#      не в TerrainDebris, кастовать к самому классу не нужно.
+	var probe := cap_terrain._debris.back() as RigidBody2D
+	_check("обломок на отдельном физическом слое",
+		probe.collision_layer == Terrain.DEBRIS_LAYER, "layer=%d" % probe.collision_layer)
+	_check("обломок ни с чем не сталкивается (mask=0)",
+		probe.collision_mask == 0, "mask=%d" % probe.collision_mask)
+
+	# 12g. Обломки не наносят урон и не толкают корабль — декоративный слой
+	#      поверх физики, а не участник её. Спавним прямо в корпус и смотрим,
+	#      что прочность не падает.
+	var bystander := _make_ship()
+	await _step(1)
+	bystander.respawn(cap_terrain.position + Vector2(100, 100))
+	await _step(1)
+	for _i in 8:
+		cap_terrain.spawn_weapon_debris(bystander.global_position, TerrainPalette.Cls.NORMAL)
+	await _step(30)
+	_check("обломки не наносят урон кораблю рядом",
+		bystander.hull == bystander.data.max_hull,
+		"прочность=%.1f/%.1f" % [bystander.hull, bystander.data.max_hull])
+
+	# 12h. Время жизни ограничено — обломок сам исчезает через несколько секунд,
+	#      не копится вечно (свой terrain, чтобы не путать с кап-тестом выше).
+	var ttl_terrain := Terrain.new()
+	ttl_terrain.palette = PALETTE
+	ttl_terrain.position = Vector2(70000, 70000)
+	ttl_terrain.debris_lifetime_min = 0.2
+	ttl_terrain.debris_lifetime_max = 0.2
+	add_child(ttl_terrain)
+	var ttl_vis := Image.create(100, 100, false, Image.FORMAT_RGBA8)
+	ttl_vis.fill(Color(0.5, 0.3, 0.1, 1.0))
+	ttl_terrain.load_level(ttl_vis)
+	await _step(1)
+
+	ttl_terrain.spawn_weapon_debris(ttl_terrain.position + Vector2(50, 50), TerrainPalette.Cls.NORMAL)
+	await _step(1)  # спавн реально происходит в _process() (см. terrain.gd) — дать кадр
+	_check("обломки появились на сцене", ttl_terrain._debris.size() > 0,
+		"обломков=%d" % ttl_terrain._debris.size())
+	await _step(90)  # 1.5 с при 60 Гц — заведомо больше lifetime=0.2 с
+	_check("обломки сами исчезают по истечении времени жизни (не копятся)",
+		ttl_terrain._debris.size() == 0, "обломков осталось=%d" % ttl_terrain._debris.size())
+	# cap_terrain (12e) и ttl_terrain (12h) сами группу никогда не запрашивали
+	# (spawn_weapon_debris звался напрямую на ссылку), но Terrain._ready() всё
+	# равно кладёт их в "terrain" (см. devlog §18, находка D) — уходим явно,
+	# иначе секция 13 ниже резолвит группу на них, а не на актуальный terrain.
+	cap_terrain.remove_from_group("terrain")
+	ttl_terrain.remove_from_group("terrain")
+
+	# 13. Регрессия на "разрушаемости от пуль нет" (заказчик, по факту игры
+	#     2026-07-21): при terrain_power=0.3 очередь из 20 пулемётных попаданий в
+	#     одну область выбивала считаные пиксели — визуально неотличимо от "пули
+	#     ничего не делают". Порог terrain_power поднят до 0.6 (devlog §19); тест
+	#     фиксирует нижнюю границу видимости через РЕАЛЬНЫЙ Explosion (не сырой
+	#     carve_circle) — чтобы будущая правка weapon-данных не тихо откатила
+	#     эффект обратно к незаметному.
+	var dumbfire_terrain := Terrain.new()
+	dumbfire_terrain.palette = PALETTE
+	dumbfire_terrain.position = Vector2(100000, 100000)
+	add_child(dumbfire_terrain)
+	var dumbfire_vis := Image.create(200, 200, false, Image.FORMAT_RGBA8)
+	dumbfire_vis.fill(Color(0.5, 0.3, 0.1, 1.0))
+	dumbfire_terrain.load_level(dumbfire_vis)
+	dumbfire_terrain.add_to_group("terrain")
+	await _step(1)
+
+	var dumbfire_solid0 := dumbfire_terrain.count_solid()
+	var burst_center := dumbfire_terrain.position + Vector2(100, 100)
+	var jitter_rng := RandomNumberGenerator.new()
+	jitter_rng.seed = 1
+	for _i in 20:
+		var exp4: Explosion = EXPLOSION_SCENE.instantiate()
+		exp4.global_position = burst_center + Vector2(
+			jitter_rng.randi_range(-3, 3), jitter_rng.randi_range(-3, 3))
+		exp4.blast_radius = DUMBFIRE_DATA.blast_radius
+		exp4.terrain_power = DUMBFIRE_DATA.terrain_power
+		exp4.damage = 0.0
+		add_child(exp4)
+		await _step(1)
+	var dumbfire_removed := dumbfire_solid0 - dumbfire_terrain.count_solid()
+	_check("очередь из 20 пулемётных попаданий заметно выедает Землю (не считаные пиксели)",
+		dumbfire_removed >= 60,
+		"выбито=%d px (было 5 px при старом terrain_power=0.3, порог регрессии — 60)" % dumbfire_removed)
+	dumbfire_terrain.remove_from_group("terrain")

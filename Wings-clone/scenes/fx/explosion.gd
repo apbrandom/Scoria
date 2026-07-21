@@ -35,7 +35,15 @@ func _carve_terrain() -> void:
 	# переводим глобальные координаты взрыва в его локальные пиксели явно,
 	# а не полагаемся на совпадение global_position с координатами рельефа.
 	var local_pos := terrain.to_local(global_position)
-	terrain.carve_circle(Vector2i(local_pos.round()), roundi(blast_radius * terrain_power))
+	var cell := Vector2i(local_pos.round())
+	var cls: int = terrain.class_at(cell) if terrain.has_method("class_at") else TerrainPalette.Cls.NORMAL
+	var changed: int = terrain.carve_circle(cell, roundi(blast_radius * terrain_power))
+	# Обломки декоративного слоя (см. scenes/fx/terrain_debris.gd) — только если
+	# carve реально что-то выбил: попадание в неразрушаемый Камень (CARVABLE=0) не
+	# должно давать "оторвавшиеся куски породы", раз порода не оторвалась. Класс
+	# читаем ДО carve (после — там уже EMPTY), только для цвета обломков.
+	if changed > 0 and terrain.has_method("spawn_weapon_debris"):
+		terrain.spawn_weapon_debris(global_position, cls)
 
 
 func _damage_ships() -> void:

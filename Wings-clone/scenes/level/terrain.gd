@@ -16,6 +16,13 @@
 class_name Terrain
 extends Node2D
 
+## preload по пути, а не голый идентификатор TerrainDebris: класс новый, и до
+## первого пересканирования проекта редактором (который ведёт
+## .godot/global_script_class_cache.cfg) голый class_name из другого скрипта
+## иногда не резолвится headless-запуском ("Identifier not declared"), хотя сам
+## файл валиден. preload по пути не зависит от этого кэша вообще.
+const TerrainDebrisScript := preload("res://scenes/fx/terrain_debris.gd")
+
 signal carved(area: Rect2i)
 
 @export var palette: TerrainPalette
@@ -39,6 +46,51 @@ signal carved(area: Rect2i)
 ## Пересобирать сразу в carve, не откладывая на кадр (используется бенчмарком).
 @export var immediate_rebuild: bool = false
 
+## Физический слой декоративных обломков (см. scenes/fx/terrain_debris.gd) —
+## отдельный от геймплейного слоя по умолчанию (корабль/снаряды/рельеф сидят на
+## слое 1, project.godot [layer_names]). У обломков collision_mask=0 (ни с чем
+## не сталкиваются), так что сам факт "своего слоя" тут скорее документация
+## (одно однозначное число вместо магической "2" в нескольких местах), чем
+## необходимость — но задел на будущее, если что-то захочет выбирать обломки
+## через физический слой (например, VFX-запрос), уже есть.
+const DEBRIS_LAYER := 2
+
+@export_group("Обломки")
+## Сколько обломков одновременно держим на сцене СРАЗУ ПО ВСЕМ триггерам
+## (оружие + столкновения корабля) — жёсткий кап, при превышении старейший
+## обломок удаляется (FIFO), см. _spawn_debris(). При хотсите 8 игроков,
+## стреляющих одновременно, это единственное, что не даёт узлам копиться
+## бесконтрольно и проседать FPS (замеры — tools/bench_debris.gd, notes/devlog.md §18).
+@export_range(8, 256, 4) var max_debris: int = 64
+
+@export_subgroup("Оружие")
+## Сколько обломков на одно попадание, которое РЕАЛЬНО что-то выбило из рельефа
+## (см. spawn_weapon_debris — попадание в Камень не даёт обломков вовсе).
+@export_range(0, 20, 1) var weapon_debris_min: int = 3
+@export_range(0, 20, 1) var weapon_debris_max: int = 8
+## Скорость разлёта — намеренно скромная (не 60-180, как в первом заходе):
+## воронка от пулемёта после правки terrain_power (2026-07-21, см.
+## notes/devlog.md §19) — всего несколько px, обломки на скорости 60-180 px/с
+## успевали улететь на 100+ px за время жизни — визуально выглядело как
+## "обломки в случайном месте", не связанные с местом попадания. Ниже — чтобы
+## обломки читались как "отсюда", а не разлетались по пол-экрана.
+@export_range(0.0, 500.0, 5.0, "suffix:px/с") var weapon_debris_speed_min: float = 15.0
+@export_range(0.0, 500.0, 5.0, "suffix:px/с") var weapon_debris_speed_max: float = 45.0
+
+@export_subgroup("Столкновение корабля")
+## Заметно меньше оружия — это пыль от удара корпусом, не разлёт от взрыва:
+## энергия удара в основном уходит в урон кораблю (crash_damage), не в разлёт
+## породы. Срабатывает при ЛЮБОМ засчитанном столкновении (в отличие от оружия) —
+## удар о неразрушаемый Камень тоже поднимает пыль, просто камень не крошится.
+@export_range(0, 20, 1) var crash_debris_min: int = 1
+@export_range(0, 20, 1) var crash_debris_max: int = 3
+@export_range(0.0, 500.0, 5.0, "suffix:px/с") var crash_debris_speed_min: float = 20.0
+@export_range(0.0, 500.0, 5.0, "suffix:px/с") var crash_debris_speed_max: float = 70.0
+
+@export_subgroup("Общее")
+@export_range(0.1, 5.0, 0.1, "suffix:с") var debris_lifetime_min: float = 0.8
+@export_range(0.1, 5.0, 0.1, "suffix:с") var debris_lifetime_max: float = 1.6
+
 var size: Vector2i
 var chunk_count: int:
 	get: return _chunks.size()
@@ -48,6 +100,13 @@ var _chunks: Array[TerrainChunk] = []
 var _cols := 0
 var _rows := 0
 var _dirty: Dictionary = {}
+## Живые обломки, в порядке спавна (голова = старейший) — см. _spawn_debris().
+var _debris: Array[Node2D] = []
+## Заявки на спавн обломков, ещё не создавшие узел — см. _spawn_debris() и
+## _drain_pending_debris() (дренаж в _process(), тот же приём, что и у _dirty).
+## Array, а не Array[Dictionary]: типизация здесь не окупается ради строкового
+## доступа по ключу ниже.
+var _pending_debris: Array = []
 
 # --- телеметрия, микросекунды; сбрасывается stats_reset() ---
 var stat_solid_image_usec := 0
@@ -295,7 +354,95 @@ func flush_dirty() -> int:
 	return n
 
 
+# ---------------------------------------------------------------- обломки
+
+## Обломки от попадания оружия — вызывать ТОЛЬКО если carve_circle реально
+## что-то выбил (changed > 0, см. Explosion._carve_terrain): попадание в
+## неразрушаемый Камень (CARVABLE=0) не крошит рельеф, значит и "оторвавшихся
+## кусков породы" быть не должно — сам метод этого не проверяет, ответственность
+## вызывающего (он и так уже знает changed, второй раз считать не нужно).
+## at — мировые координаты (не локальные Terrain). cls — класс материала в точке
+## попадания, только для цвета обломков.
+func spawn_weapon_debris(at: Vector2, cls: int) -> void:
+	_spawn_debris(at, randi_range(weapon_debris_min, weapon_debris_max),
+		weapon_debris_speed_min, weapon_debris_speed_max, cls)
+
+
+## Обломки/пыль от столкновения корабля с рельефом — заметно меньше оружейных
+## (см. @export-группу "Столкновение корабля" выше) и, в отличие от оружия,
+## срабатывают при ЛЮБОМ засчитанном столкновении независимо от того, выбило ли
+## carve хоть пиксель: удар корпусом о Камень тоже поднимает пыль, просто камень
+## при этом не крошится (см. Ship._integrate_forces).
+func spawn_crash_debris(at: Vector2, cls: int) -> void:
+	_spawn_debris(at, randi_range(crash_debris_min, crash_debris_max),
+		crash_debris_speed_min, crash_debris_speed_max, cls)
+
+
+## Оба вызывающих (Explosion — из body_entered снаряда, Ship — из
+## _integrate_forces при столкновении) в реальной игре срабатывают ИЗНУТРИ
+## физ-колбэка. add_child() нового RigidBody2D там запрещён тем же правилом,
+## что и пересборка коллизии рельефа (см. carve_circle выше): "Can't change
+## state while flushing queries" — проверено на реальном пути через diag_combat
+## и на крэше корабля. Решение — ТА ЖЕ схема, что уже отработана для _dirty
+## чанков в этом файле (append в очередь здесь, реальная работа — в _process,
+## заведомо вне флаша запросов): просто добавляем заявку в очередь, тяжёлая
+## часть (instantiate/add_child/impulse) — в _drain_pending_debris() ниже.
+## call_deferred() сюда НЕ пошёл сознательно: на пачке заявок подряд (взрыв —
+## это 3-8 штук разом) его фактический момент исполнения оказался
+## непредсказуем на практике (проверено — иногда откладывался до выгрузки
+## сцены), тогда как _process() уже доказанно детерминирован в этом кодовой
+## базе (та же логика годами держит _dirty).
+func _spawn_debris(at: Vector2, count: int, speed_min: float, speed_max: float, cls: int) -> void:
+	if count <= 0:
+		return
+	var color := palette.get_mask_color(cls) if palette != null else Color(0.5, 0.3, 0.1)
+	for _i in count:
+		_pending_debris.append({
+			"at": at,
+			"speed": randf_range(speed_min, speed_max),
+			"lifetime": randf_range(debris_lifetime_min, debris_lifetime_max),
+			"color": color,
+		})
+
+
+func _drain_pending_debris() -> void:
+	if _pending_debris.is_empty():
+		return
+	for req in _pending_debris:
+		_evict_oldest_if_full()
+		var d := TerrainDebrisScript.new()
+		d.setup(req["color"], req["lifetime"])
+		d.tree_exiting.connect(_on_debris_freed.bind(d))
+		get_parent().add_child(d)
+		d.global_position = req["at"]
+		var dir := Vector2.RIGHT.rotated(randf() * TAU)
+		d.apply_central_impulse(dir * req["speed"])
+		_debris.append(d)
+	_pending_debris.clear()
+
+
+## Жёсткий кап вместо пула объектов: на этих масштабах (десятки обломков разом,
+## не тысячи) разница в стоимости instantiate/free пренебрежима (замеры —
+## tools/bench_debris.gd), а пул RigidBody2D пришлось бы аккуратно сбрасывать
+## (позиция/скорость/вращение/альфа/таймер) при переиспользовании — лишняя
+## сложность без измеримой выгоды на этом масштабе.
+func _evict_oldest_if_full() -> void:
+	while _debris.size() >= max_debris:
+		var oldest: Node2D = _debris.pop_front()
+		if is_instance_valid(oldest):
+			oldest.queue_free()
+
+
+## erase() безопасен даже если узел уже убран (например, _evict_oldest_if_full
+## только что сделал pop_front для этого же узла) — Array.erase() на
+## отсутствующем элементе просто ничего не делает, без ошибки.
+func _on_debris_freed(d: Node2D) -> void:
+	_debris.erase(d)
+
+
 func _process(_delta: float) -> void:
+	_drain_pending_debris()
+
 	# В immediate-режиме _dirty обычно пуст (carve пересобрал сразу), сюда не доходим.
 	# Но если carve случился внутри физ-колбэка, пересборка отложена сюда даже в
 	# immediate-режиме (см. carve_circle) — доедаем здесь, вне флаша запросов.
