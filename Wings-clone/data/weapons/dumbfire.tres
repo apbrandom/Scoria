@@ -10,6 +10,7 @@ projectile_scene = ExtResource("2_proj")
 reload_time = 0.15
 muzzle_speed = 900.0
 lifetime = 2.0
+projectile_scale = 0.45
 damage = 6.0
 blast_radius = 3.0
 terrain_power = 0.6

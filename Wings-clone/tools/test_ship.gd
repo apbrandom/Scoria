@@ -10,6 +10,7 @@ const SHIP_DATA := preload("res://data/ships/normal.tres")
 const DUMBFIRE_DATA := preload("res://data/weapons/dumbfire.tres")
 const BOMB_DATA := preload("res://data/weapons/bomb.tres")
 const EXPLOSION_SCENE := preload("res://scenes/fx/explosion.tscn")
+const PROJECTILE_SCENE := preload("res://scenes/projectiles/projectile.tscn")
 const PALETTE := preload("res://data/terrain/wings_classes.tres")
 
 var _pass := 0
@@ -34,6 +35,24 @@ func _check(title: String, ok: bool, detail := "") -> void:
 func _step(frames: int) -> void:
 	for _i in frames:
 		await get_tree().physics_frame
+
+
+## Спавн обломков дренируется в Terrain._process() (idle-время, см. terrain.gd)
+## из очереди _pending_debris, а не в физ-шаге — _step()/physics_frame этого не
+## гарантирует (нашли как гонку: carve реально прошёл, а debris_terrain._debris
+## ещё кадр оставался пуст). Звать явно в местах, которые проверяют _debris.size()
+## сразу после события-триггера. НЕ встроено в _step() — там это добавляет
+## непредсказуемое число ЛИШНИХ physics-тиков между вызовами (Godot догоняет
+## физику перед кадром отрисовки), что ломает тесты, считающие кулдауны/шаги
+## впритык (см. секцию 11, GameRules.reload_time_scale).
+## Две итерации, не одна: диагностикой подтверждено (10-кадровый лог), что
+## возобновление корутины из await process_frame отстаёт от реального
+## Node._process() на один кадр — первый process_frame после спавна очередь ещё
+## НЕ дренирует, дренаж виден только со второго. Один await молча ловил
+## "заспавнено=0" через кадр.
+func _drain_debris() -> void:
+	for _i in 2:
+		await get_tree().process_frame
 
 
 func _make_ship() -> Ship:
@@ -125,6 +144,27 @@ func _run() -> void:
 		# не на ошибку в математике (см. ship.gd _fire)
 		_check("скорость снаряда = прицел + скорость корабля", got_v.distance_to(expected_v) < 5.0,
 			"получено=%s ожидалось=%s" % [got_v, expected_v])
+		# Регрессия на "пуля выглядит как маленькая ракета" (заказчик, 2026-07-21):
+		# общая сцена projectile.tscn у пулемёта и ракетницы одна и та же, размер
+		# ВИЗУАЛА должен различаться через WeaponData.projectile_scale (см.
+		# weapon_data.gd), а не совпадать по умолчанию. Проверяем scale ДОЧЕРНЕГО
+		# узла Visual, не self — self.scale физика сбрасывает на 1.0 каждый физ-шаг
+		# (см. projectile.gd). КОЛЛАЙДЕР намеренно НЕ масштабируем — регрессия на
+		# "пули проходят сквозь текстуры" (заказчик, тот же день): уменьшенный
+		# коллайдер почти не давал снаряду зацепить безтолщинные отрезки рельефа
+		# (ConcavePolygonShape2D) на скорости пулемёта, см. tools/diag_bullet_tunnel.gd.
+		var shot := shots[0] as Node2D
+		var collision_scale: Vector2 = (shot.get_node("CollisionShape2D") as Node2D).scale
+		var visual_scale: Vector2 = (shot.get_node("Visual") as Node2D).scale
+		_check("коллайдер снаряда НЕ масштабируется (иначе туннелирует сквозь рельеф)",
+			collision_scale.is_equal_approx(Vector2.ONE),
+			"scale=%s ожидалось=%s" % [collision_scale, Vector2.ONE])
+		_check("снаряд применяет WeaponData.projectile_scale (визуал)",
+			visual_scale.is_equal_approx(Vector2.ONE * DUMBFIRE_DATA.projectile_scale),
+			"scale=%s ожидалось=%s" % [visual_scale, Vector2.ONE * DUMBFIRE_DATA.projectile_scale])
+		_check("пулемётная пуля мельче ракеты (projectile_scale < ракеты)",
+			DUMBFIRE_DATA.projectile_scale < BOMB_DATA.projectile_scale,
+			"пулемёт=%.2f ракета=%.2f" % [DUMBFIRE_DATA.projectile_scale, BOMB_DATA.projectile_scale])
 		(shots[0] as Node).queue_free()
 	await _step(1)
 
@@ -368,7 +408,7 @@ func _run() -> void:
 	exp2.terrain_power = 1.0
 	exp2.damage = 0.0
 	add_child(exp2)
-	await _step(1)
+	await _drain_debris()
 	var weapon_spawned := debris_terrain._debris.size() - before_weapon
 	_check("взрыв в разрушаемую породу даёт 3..8 обломков",
 		weapon_spawned >= 3 and weapon_spawned <= 8, "заспавнено=%d" % weapon_spawned)
@@ -497,7 +537,7 @@ func _run() -> void:
 
 	for _i in 4:
 		cap_terrain.spawn_weapon_debris(cap_terrain.position + Vector2(100, 100), TerrainPalette.Cls.NORMAL)
-	await _step(1)  # спавн реально происходит в _process() (см. terrain.gd) — дать кадр
+	await _drain_debris()
 	_check("жёсткий кап держит max_debris обломков одновременно",
 		cap_terrain._debris.size() == 5, "обломков=%d (кап=5)" % cap_terrain._debris.size())
 
@@ -539,7 +579,7 @@ func _run() -> void:
 	await _step(1)
 
 	ttl_terrain.spawn_weapon_debris(ttl_terrain.position + Vector2(50, 50), TerrainPalette.Cls.NORMAL)
-	await _step(1)  # спавн реально происходит в _process() (см. terrain.gd) — дать кадр
+	await _drain_debris()
 	_check("обломки появились на сцене", ttl_terrain._debris.size() > 0,
 		"обломков=%d" % ttl_terrain._debris.size())
 	await _step(90)  # 1.5 с при 60 Гц — заведомо больше lifetime=0.2 с
@@ -587,3 +627,93 @@ func _run() -> void:
 		dumbfire_removed >= 60,
 		"выбито=%d px (было 5 px при старом terrain_power=0.3, порог регрессии — 60)" % dumbfire_removed)
 	dumbfire_terrain.remove_from_group("terrain")
+
+	# 14. Регрессия на "пули проходят сквозь текстуры" (заказчик, по факту игры
+	#     2026-07-21): пулемётная пуля (900 px/с) почти всегда туннелировала сквозь
+	#     рельеф — Terrain собран как ConcavePolygonShape2D из безтолщинных отрезков
+	#     (см. terrain_chunk.gd), а continuous_cd=2 (CCD_MODE_CAST_SHAPE) у РЕАЛЬНОГО
+	#     Projectile против такой геометрии ненадёжен (замерено tools/diag_bullet_tunnel.gd:
+	#     19/20 промахов на боевой скорости). continuous_cd=1 (CCD_MODE_CAST_RAY) —
+	#     0/20 на всём диапазоне скоростей. Тест бьёт РЕАЛЬНЫМ Projectile.tscn (через
+	#     body_entered), не Explosion напрямую — иначе не поймать регрессию именно
+	#     в физике попадания снаряда, а не в самом взрыве/carve (см. diag_combat.gd
+	#     про то же разграничение).
+	var tunnel_terrain := Terrain.new()
+	tunnel_terrain.palette = PALETTE
+	tunnel_terrain.position = Vector2(200000, 200000)
+	add_child(tunnel_terrain)
+	var tunnel_vis := Image.create(400, 100, false, Image.FORMAT_RGBA8)
+	tunnel_vis.fill(Color(0, 0, 0, 0))
+	tunnel_vis.fill_rect(Rect2i(0, 50, 400, 50), Color(0.5, 0.3, 0.1, 1.0))
+	tunnel_terrain.load_level(tunnel_vis)
+	tunnel_terrain.add_to_group("terrain")
+	await _step(1)
+
+	const TUNNEL_N := 20
+	for i in TUNNEL_N:
+		var bullet: Projectile = PROJECTILE_SCENE.instantiate()
+		bullet.weapon = DUMBFIRE_DATA
+		bullet.global_position = tunnel_terrain.position + Vector2(10 + i * (380.0 / TUNNEL_N), 20)
+		bullet.linear_velocity = Vector2(0, DUMBFIRE_DATA.muzzle_speed)
+		add_child(bullet)
+	await _step(30)
+	var tunnelled := get_tree().get_nodes_in_group("projectiles").size()
+	_check("пулемётная пуля реально сталкивается с Землёй (не пролетает насквозь)",
+		tunnelled == 0,
+		"пролетело=%d/%d (ожидалось 0 — было 19/20 при continuous_cd=CAST_SHAPE)" % [tunnelled, TUNNEL_N])
+	for n in get_tree().get_nodes_in_group("projectiles"):
+		(n as Node).queue_free()
+	tunnel_terrain.remove_from_group("terrain")
+
+	# 15. Регрессия на "контакт хороший, но разрежения земли нет" (заказчик, по
+	#     факту игры 2026-07-21, после фикса §14): тело снаряда физически тормозит
+	#     СВОИМ радиусом (2px) РАНЬШЕ настоящей поверхности — центр CircleShape2D не
+	#     может дойти до точки контакта вплотную. При carve-радиусе (после материала
+	#     — 2.6px), сравнимом с радиусом снаряда, взрыв вокруг ЦЕНТРА тела едва
+	#     задевал породу: замерено (tools/diag_bullet_erosion.gd) — попадание на
+	#     cell x=298 при границе стены x=300, реальный съём ~3px за выстрел, БЕЗ
+	#     роста в глубину при повторных попаданиях в одну точку (тело каждый раз
+	#     тормозит на той же дистанции от НОВОЙ границы). Плюс linear_velocity в
+	#     _detonate()/body_entered физдвижок уже гасит в (0,0) (та же особенность,
+	#     что в Ship._integrate_forces) — Projectile.gd теперь кэширует скорость в
+	#     _physics_process ДО столкновения и сдвигает точку взрыва на радиус снаряда
+	#     вперёд по ней. Бьём РЕАЛЬНЫМ Ship (не Explosion/Projectile напрямую) в упор
+	#     без гравитации (иначе снос размазывает очередь по y, отдельный эффект) —
+	#     очередь в одну точку должна реально прорыть канал вглубь, а не топтаться
+	#     на месте.
+	var erosion_terrain := Terrain.new()
+	erosion_terrain.palette = PALETTE
+	erosion_terrain.position = Vector2(300000, 300000)
+	add_child(erosion_terrain)
+	var erosion_vis := Image.create(400, 100, false, Image.FORMAT_RGBA8)
+	erosion_vis.fill(Color(0, 0, 0, 0))
+	const EROSION_WALL_X := 200
+	erosion_vis.fill_rect(Rect2i(EROSION_WALL_X, 0, 400 - EROSION_WALL_X, 100), Color(0.5, 0.3, 0.1, 1.0))
+	erosion_terrain.load_level(erosion_vis)
+	erosion_terrain.add_to_group("terrain")
+	await _step(1)
+
+	var erosion_ship := _make_ship()
+	erosion_ship.global_position = erosion_terrain.position + Vector2(50, 50)
+	erosion_ship.equip_primary(DUMBFIRE_DATA)
+	erosion_ship.aim_angle = PI / 2.0  # нос вправо, в стену
+	erosion_ship.gravity_scale = 0.0
+	await _step(1)
+
+	erosion_ship.input.fire_primary = true
+	for _i in 180:  # 3 с при 60 Гц, reload=0.15с -> ~20 выстрелов в одну точку
+		await _step(1)
+	erosion_ship.input.fire_primary = false
+	for n in get_tree().get_nodes_in_group("projectiles"):
+		(n as Node).queue_free()
+
+	var erosion_depth := -1
+	for x in range(EROSION_WALL_X, 400):
+		if not erosion_terrain.is_solid_at(Vector2i(x, 50)):
+			erosion_depth = x - EROSION_WALL_X
+	_check("очередь пулемёта в упор реально прорывает канал вглубь (не топчется на месте)",
+		erosion_depth >= 15,
+		"глубина канала=%s px (было 0 px до фикса точки взрыва, ожидалось >=15)" % (
+			str(erosion_depth) if erosion_depth >= 0 else "н/д — ничего не тронуто")
+		)
+	erosion_terrain.remove_from_group("terrain")

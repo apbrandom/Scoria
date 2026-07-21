@@ -33,6 +33,16 @@ extends Resource
 @export_range(0.0, 2.0, 0.05) var gravity_scale: float = 0.0
 ## Через сколько секунд снаряд исчезает сам, если ни во что не попал.
 @export_range(0.2, 15.0, 0.1, "suffix:с") var lifetime: float = 3.0
+## Масштаб снаряда (визуал + коллайдер) относительно базовой сцены
+## (projectile.tscn: радиус коллайдера 2px). Общая сцена на все виды оружия
+## (см. projectile_scene выше) иначе давала бы пулемётной пуле и ракете
+## ОДИНАКОВЫЙ размер — пуля должна выглядеть маленькой и быстрой, а не
+## уменьшенной копией ракеты. Применяется в Projectile._ready() (см.
+## projectile.gd) — НЕ через self.scale корневого RigidBody2D (физика каждый
+## шаг перезаписывает его global_transform результатом симуляции и сбрасывает
+## масштаб обратно на 1.0), а через scale дочерних CollisionShape2D/Visual,
+## которые физика не трогает.
+@export_range(0.2, 3.0, 0.05) var projectile_scale: float = 1.0
 
 @export_group("Урон")
 @export_range(0.0, 200.0, 1.0) var damage: float = 20.0

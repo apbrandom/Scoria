@@ -1,6 +1,6 @@
-[gd_scene load_steps=2 format=3]
+[gd_scene format=3 uid="uid://cvfib1i7ooqxj"]
 
-[ext_resource type="Script" path="res://tools/bench_debris.gd" id="1_bd"]
+[ext_resource type="Script" uid="uid://coctqqi1gn70p" path="res://tools/bench_debris.gd" id="1_bd"]
 
-[node name="BenchDebris" type="Node2D"]
+[node name="BenchDebris" type="Node2D" unique_id=589344467]
 script = ExtResource("1_bd")
