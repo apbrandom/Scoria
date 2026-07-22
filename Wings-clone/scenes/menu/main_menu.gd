@@ -40,12 +40,12 @@ func _on_back_pressed() -> void:
 
 
 func _on_single_pressed() -> void:
-	GameRules.player_count = 1
+	_set_single_player()
 	get_tree().change_scene_to_file(LEVEL_SCENE)
 
 
 func _on_local_two_pressed() -> void:
-	GameRules.player_count = 2
+	_set_local_two_player()
 	get_tree().change_scene_to_file(LEVEL_SCENE)
 
 
@@ -58,13 +58,37 @@ func _on_net_back_pressed() -> void:
 
 
 func _on_host_pressed() -> void:
-	GameRules.net_forced_role = "host"
+	_set_host_role()
 	get_tree().change_scene_to_file(NET_PLAYGROUND_SCENE)
 
 
 func _on_join_pressed() -> void:
-	GameRules.net_forced_role = "join"
+	_set_join_role()
 	get_tree().change_scene_to_file(NET_PLAYGROUND_SCENE)
+
+
+## Запись в GameRules вынесена из _on_*_pressed отдельными методами — не ради
+## самого по себе разделения, а чтобы tools/test_menu.gd мог проверить ЧТО
+## записывается, не вызывая следом реальный change_scene_to_file(): тот
+## запускает по-настоящему net_playground.tscn (реальный ENet-хост на порту)
+## или level.tscn, и вызванный несколько раз подряд в одном headless-прогоне
+## (все четыре обработчика в одном тесте) роняет движок ("Parent node is busy
+## adding/removing children") — обнаружено эмпирически при попытке написать
+## тест "в лоб" через сами _on_*_pressed.
+func _set_single_player() -> void:
+	GameRules.player_count = 1
+
+
+func _set_local_two_player() -> void:
+	GameRules.player_count = 2
+
+
+func _set_host_role() -> void:
+	GameRules.net_forced_role = "host"
+
+
+func _set_join_role() -> void:
+	GameRules.net_forced_role = "join"
 
 
 func _on_exit_pressed() -> void:
