@@ -105,6 +105,19 @@
 - Игроки 3–8: `InputMap`-экшены заведены для `p1_*`/`p2_*` (2 локальных
   игрока, MatchManager, devlog §22). Полная сетка 40 экшенов и спавн >2
   кораблей — когда понадобится хотсит на больше игроков.
-- Сетевой PvP — отдельная, более крупная задача (архитектурное решение по
-  синхронизации carve рельефа между клиентами нужно принять заранее, не
-  постфактум) — см. обсуждение приоритетов сессии.
+- **Сетевой PvP (неделя 2 `timeline.md`) — в работе.**
+  - [x] Модель синхронизации зафиксирована (`architecture.md` → «Сеть: модель
+        синхронизации»): High-Level API, ENet/UDP, listen-server
+        host-authoritative, carve событиями+replay, Steam-пир позже.
+  - [x] Слой подключения: `NetworkManager` (host/join по ENet), headless-тест
+        коннекта сервер+клиент в одном процессе (devlog §23, `tools/test_net`).
+  - [x] `RemoteInput` — сетевой провайдер `ShipInput` (§2.3) + `ShipInputSync`:
+        интенты владельца доезжают в RemoteInput хоста по RPC (devlog §24,
+        `tools/test_net_input`). Проверен только путь ВВОДА.
+  - [ ] Синхронизация корабля хост→клиенты (позиция/поворот) через
+        `MultiplayerSynchronizer` — обратной синхронизации ещё нет.
+  - [ ] Carve рельефа по reliable_ordered `@rpc` + локальный детерминированный
+        replay (`MultiplayerSynchronizer` не тянет `Image`/`BitMap` — devlog §23.1).
+  - [ ] Вплести NetworkManager в реальный поток (меню host/join → Level) —
+        сейчас класс только в тесте.
+  - [ ] Steam-пир (`SteamMultiplayerPeer`, GodotSteam) за тем же интерфейсом.
