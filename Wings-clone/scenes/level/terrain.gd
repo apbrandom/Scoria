@@ -22,6 +22,7 @@ extends Node2D
 ## иногда не резолвится headless-запуском ("Identifier not declared"), хотя сам
 ## файл валиден. preload по пути не зависит от этого кэша вообще.
 const TerrainDebrisScript := preload("res://scenes/fx/terrain_debris.gd")
+const TerrainDustScript := preload("res://scenes/fx/terrain_dust.gd")
 
 signal carved(area: Rect2i)
 
@@ -107,6 +108,10 @@ var _debris: Array[Node2D] = []
 ## Array, а не Array[Dictionary]: типизация здесь не окупается ради строкового
 ## доступа по ключу ниже.
 var _pending_debris: Array = []
+## Заявки на разовый пшик пыли (см. scenes/fx/terrain_dust.gd) — та же причина
+## отложенности до _process, что и у _pending_debris (add_child внутри флаша
+## физ-запросов запрещён движком). Array мест: {"at": Vector2, "color": Color}.
+var _pending_dust: Array = []
 
 # --- телеметрия, микросекунды; сбрасывается stats_reset() ---
 var stat_solid_image_usec := 0
@@ -366,6 +371,7 @@ func flush_dirty() -> int:
 func spawn_weapon_debris(at: Vector2, cls: int) -> void:
 	_spawn_debris(at, randi_range(weapon_debris_min, weapon_debris_max),
 		weapon_debris_speed_min, weapon_debris_speed_max, cls)
+	_spawn_dust(at, cls)
 
 
 ## Обломки/пыль от столкновения корабля с рельефом — заметно меньше оружейных
@@ -376,6 +382,7 @@ func spawn_weapon_debris(at: Vector2, cls: int) -> void:
 func spawn_crash_debris(at: Vector2, cls: int) -> void:
 	_spawn_debris(at, randi_range(crash_debris_min, crash_debris_max),
 		crash_debris_speed_min, crash_debris_speed_max, cls)
+	_spawn_dust(at, cls)
 
 
 ## Оба вызывающих (Explosion — из body_entered снаряда, Ship — из
@@ -403,6 +410,25 @@ func _spawn_debris(at: Vector2, count: int, speed_min: float, speed_max: float, 
 			"lifetime": randf_range(debris_lifetime_min, debris_lifetime_max),
 			"color": color,
 		})
+
+
+## Ставит в очередь одноразовый пшик пыли (см. scenes/fx/terrain_dust.gd) —
+## та же схема отложенного спавна, что и у _spawn_debris (add_child внутри
+## флаша физ-запросов запрещён). cls — только для цвета (palette.get_mask_color).
+func _spawn_dust(at: Vector2, cls: int) -> void:
+	var color := palette.get_mask_color(cls) if palette != null else Color(0.5, 0.3, 0.1)
+	_pending_dust.append({"at": at, "color": color})
+
+
+func _drain_pending_dust() -> void:
+	if _pending_dust.is_empty():
+		return
+	for req in _pending_dust:
+		var d := TerrainDustScript.new()
+		get_parent().add_child(d)
+		d.global_position = req["at"]
+		d.setup(req["color"])
+	_pending_dust.clear()
 
 
 func _drain_pending_debris() -> void:
@@ -442,6 +468,7 @@ func _on_debris_freed(d: Node2D) -> void:
 
 func _process(_delta: float) -> void:
 	_drain_pending_debris()
+	_drain_pending_dust()
 
 	# В immediate-режиме _dirty обычно пуст (carve пересобрал сразу), сюда не доходим.
 	# Но если carve случился внутри физ-колбэка, пересборка отложена сюда даже в
