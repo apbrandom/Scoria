@@ -91,8 +91,9 @@
       отдельная сессия с техническим замером на Steam Deck, не point-fix
       над `carve_circle`. Готовые примеры на Godot 4 найдены и записаны
       (`notes/terrain_research.md`).
-- [ ] `WorldEnvironment.Glow` — решение принято (`architecture.md §9.3`),
-      узел так и не создан.
+- [x] `WorldEnvironment.Glow` — заведён на level.tscn/net_playground.tscn
+      (`scripts/level/glow_environment.gd`), Thrust реально светится,
+      стоимость кадра в пределах шума измерения (devlog §31).
 - `carve()` радиусом 100 (Nuke) стоит ~9 мс в GDScript — первый кандидат на
   перенос в C#/GDExtension, если понадобится (architecture.md §8.2).
 
@@ -103,10 +104,8 @@
   §13), звука по-прежнему нет (`AudioStreamPlayer2D EngineSfx` не заведён).
   `Explosion` всё ещё просто исчезающая вспышка-многоугольник без частиц и
   звука (architecture.md §11.2).
-- `WorldEnvironment.Glow` — решение принято (`architecture.md §9.3`), но сам
-  узел ещё нигде не создан. Без него частицы `Thrust` не светятся, хотя
-  цветовой градиент (`color_ramp`) уже готов подхватить свечение, как
-  появится глобальный `WorldEnvironment` на уровне сцены.
+- [x] `WorldEnvironment.Glow` — **сделано** (devlog §31): `Thrust` реально
+  светится на level.tscn/net_playground.tscn.
 - Космический фон — инструменты выбраны (`architecture.md` §9), контент не
   сделан.
 - Разлетающиеся обломки от оружия и столкновений — **сделано** (devlog §18):
