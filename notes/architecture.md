@@ -97,6 +97,21 @@ res://
 Разделение `resources/` (классы) и `data/` (`.tres`-инстансы) — чтобы дизайнер
 добавлял корабль/оружие файлом, не трогая код.
 
+> **Реальность на сейчас (аудит 2026-07-22, notes/audit.md):** дерево выше —
+> исходный план, не 1:1 факт. `scenes/main.tscn` не существует — вместо него
+> `scenes/menu/main_menu.tscn` (простой переключатель сцен, НЕ персистентный
+> Main из §2.1, см. devlog §26.1). `terrain.tscn`/`terrain_chunk.tscn` тоже не
+> существуют — `Terrain`/`TerrainChunk` строятся кодом из `Terrain.new()`
+> (обоснование — в шапках `terrain.gd`/`terrain_chunk.gd`: рантаймовые объекты
+> без авторского содержимого). Добавились не отражённые здесь
+> `scripts/level/` (общий `LevelImageLoader`), `scripts/net/`
+> (`NetworkManager`, `ShipInputSync`), `scenes/fx/terrain_debris.gd`,
+> `scenes/fx/terrain_dust.gd`. `scenes/ui/hud.tscn` не заведён — HUD везде
+> собирается кодом (`Label` + `CanvasLayer`) прямо в сцене, которой он
+> принадлежит. Актуальный список — `notes/roadmap.md`, а не это дерево;
+> обновлять дерево при каждой мелкой правке не стали — оно фиксирует
+> НАМЕРЕНИЕ на момент проектирования, реальность живёт в коде и devlog.
+
 ---
 
 ## 2. Сцены и узлы
@@ -183,6 +198,16 @@ if input.thrust:
 - `AIInput` — позже (в оригинале есть Computer-игроки).
 - `RemoteInput` — позже; тогда на корабль вешается `MultiplayerSynchronizer`,
   а сервер получает интенты по RPC. Переписывать `Ship` не придётся.
+
+> **Реальность на сейчас (аудит 2026-07-22):** `RemoteInput`/`ShipInputSync`
+> уже сделаны (devlog §24) и `NetSync` (`MultiplayerSynchronizer`) уже висит
+> в `ship.tscn` (devlog §25) — предсказание сбылось, `Ship` действительно не
+> переписывали. Разошлось с диаграммой узлов выше: `Sprite2D` — по факту
+> `Visual` (`Polygon2D`, треугольник-плейсхолдер, roadmap.md), `EngineSfx` не
+> заведён (звука двигателя пока нет), `PickupArea` не заведён (десантники —
+> вне v0.1, `timeline.md`). Ничего из этого не скрыто — все три пункта уже
+> отдельно отслежены в `roadmap.md`/`devlog.md`, просто диаграмма узлов сама
+> по себе никогда не обновлялась вслед за ними.
 
 ### 2.4 Снаряды — `projectile.tscn` (`RigidBody2D`)
 ```
