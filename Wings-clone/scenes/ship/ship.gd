@@ -232,6 +232,14 @@ func _integrate_forces(state: PhysicsDirectBodyState2D) -> void:
 			impulse = imp
 			impact_pos = state.get_contact_collider_position(i)
 			impact_collider = state.get_contact_collider_object(i)
+	# Явное решение (не побочный эффект): столкновение корабль-корабль (оба
+	# RigidBody2D) физически отталкивается физдвижком САМО, без нашего участия —
+	# но урон/carve/пыль ниже только от рельефа (StaticBody2D). Таран не часть
+	# механики Wings (жанр — стрельба на расстоянии, не сближение), а не
+	# недосмотр — раньше нигде явно не было зафиксировано, что это решение,
+	# а не забытый случай (notes/audit.md §3.2). Если понадобится ситуация
+	# "толкнул соперника в породу" — считать нужно ту же терраин-коллизию у
+	# ОБОИХ кораблей отдельно (каждый уже её и делает сам по себе), не эту.
 	if not (impact_collider is StaticBody2D):
 		return
 
