@@ -25,6 +25,17 @@ const PORT := 24545
 ## в единицы кадров; большой запас — только чтобы не флейкнуть на нагруженной
 ## машине. При успехе выходим из цикла сразу, не ждём потолок.
 const CONNECT_TIMEOUT_FRAMES := 600
+## Отдельный, заметно МЕНЬШИЙ потолок — только для проверки "второй клиент НЕ
+## подключился" (см. секцию MAX_CLIENTS в _run()). Это единственная проверка в
+## файле, которая по своей сути должна выждать ВЕСЬ потолок целиком (это
+## негативный результат — коннект принципиально не наступит, тест не может
+## выйти по успеху раньше). CONNECT_TIMEOUT_FRAMES=600 честный запас для
+## положительных ожиданий (которые обычно выходят за считаные кадры), но здесь
+## тот же запас добавил бы ~10 реальных секунд к каждому прогону тестов ради
+## перестраховки, которая не нужна: обычный коннект утверждается за ~5 кадров
+## (см. вывод "клиент подключился... кадров ждали: 5"), 90 кадров (1.5 с) —
+## десятикратный запас сверху.
+const REJECT_TIMEOUT_FRAMES := 90
 
 var _pass := 0
 var _fail := 0
@@ -33,6 +44,13 @@ var _server_mp: MultiplayerAPI
 var _client_mp: MultiplayerAPI
 var _server_nm: NetworkManager
 var _client_nm: NetworkManager
+
+# Второй клиент — только для проверки MAX_CLIENTS (см. секцию в конце _run()),
+# отдельное поддерево/API по тому же принципу, что server_root/client_root.
+var _client2_mp: MultiplayerAPI
+var _client2_nm: NetworkManager
+var _client2_connected := false
+var _client2_failed := false
 
 # Флаги, которые выставляют обработчики сигналов NetworkManager (именованные, не
 # лямбды — как в match_manager.gd, без неоднозначностей захвата).
@@ -75,6 +93,19 @@ func _ready() -> void:
 	_client_nm.connected_to_host.connect(_on_client_connected)
 	_client_nm.connection_failed.connect(_on_client_failed)
 
+	# Третье поддерево — второй клиент, нужен только под конец _run() (проверка
+	# MAX_CLIENTS), заводим здесь же, чтобы не размазывать паттерн set_multiplayer
+	# по разным местам файла.
+	var client2_root := Node.new()
+	client2_root.name = "Client2Root"
+	add_child(client2_root)
+	_client2_mp = MultiplayerAPI.create_default_interface()
+	get_tree().set_multiplayer(_client2_mp, client2_root.get_path())
+	_client2_nm = NET_MANAGER_SCRIPT.new()
+	client2_root.add_child(_client2_nm)
+	_client2_nm.connected_to_host.connect(func() -> void: _client2_connected = true)
+	_client2_nm.connection_failed.connect(func() -> void: _client2_failed = true)
+
 	await _run()
 
 	print("\n=== ИТОГ: %d пройдено, %d провалено ===" % [_pass, _fail])
@@ -89,10 +120,11 @@ func _check(title: String, ok: bool, detail := "") -> void:
 	print("  [%s] %s   %s" % ["OK" if ok else "ПРОВАЛ", title, detail])
 
 
-## Поллит оба API и ждёт кадр. Именно здесь двигается ENet-хендшейк.
+## Поллит все API и ждёт кадр. Именно здесь двигается ENet-хендшейк.
 func _poll_step() -> void:
 	_server_mp.poll()
 	_client_mp.poll()
+	_client2_mp.poll()
 	await get_tree().physics_frame
 
 
@@ -138,6 +170,28 @@ func _run() -> void:
 	_check("is_host(): сервер = true", _server_nm.is_host())
 	_check("is_host(): клиент = false", not _client_nm.is_host())
 	_check("is_networked(): оба в сети", _server_nm.is_networked() and _client_nm.is_networked())
+
+	# MAX_CLIENTS=1 (NetworkManager.host() уже держит одного клиента) — второй
+	# ЖИВОЙ join() не должен присоединиться. NetworkManager сам никакой лимит не
+	# считает — это делает ENetMultiplayerPeer.create_server(port, MAX_CLIENTS)
+	# внутри движка (см. шапку network_manager.gd), здесь мы не столько тестируем
+	# СВОЙ код, сколько проверяем предположение, на котором стоит вся модель "хост
+	# + 1 клиент" (architecture.md) — если бы ENet вдруг тихо пускал третьего,
+	# это был бы не баг нашего кода, а сломанное предположение архитектуры.
+	var join2_err := _client2_nm.join("127.0.0.1", PORT)
+	_check("join() второго клиента отправил запрос (OK)", join2_err == OK,
+		"err=%s" % error_string(join2_err))
+	var frames2 := 0
+	while frames2 < REJECT_TIMEOUT_FRAMES and not _client2_connected and not _client2_failed:
+		await _poll_step()
+		frames2 += 1
+	_check("второй клиент сверх MAX_CLIENTS НЕ подключился",
+		not _client2_connected,
+		"connected=%s failed=%s кадров=%d" % [_client2_connected, _client2_failed, frames2])
+	_check("хост по-прежнему видит только одного клиента",
+		_server_nm.unique_id() == 1 and _client_nm.is_networked(),
+		"клиент №1 всё ещё в сети — второй его не вытеснил")
+	_client2_nm.disconnect_net()
 
 	# Разрыв: клиент уходит, хост должен это увидеть.
 	var expected_leave := _client_nm.unique_id()
