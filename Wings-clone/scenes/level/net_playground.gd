@@ -57,6 +57,7 @@ const SHIP_DATA := preload("res://data/ships/normal.tres")
 ## preload по пути — свежий class_name может не резолвиться headless-запуском
 ## до пересканирования кэша (та же грабля, что уже ловилась на TerrainDebris).
 const GLOW_ENV_SCRIPT := preload("res://scripts/level/glow_environment.gd")
+const HUD_LABEL_SCRIPT := preload("res://scripts/level/hud_label.gd")
 const MENU_SCENE := "res://scenes/menu/main_menu.tscn"
 
 ## Открытое небо у верхнего края карты — безопасно и без карва при любом
@@ -152,14 +153,7 @@ func _ready() -> void:
 	# кровью (по фидбеку с ручного теста — второе окно легко потерять).
 	get_window().title = "Wings-clone — %s" % ("ХОСТ" if _is_host else "КЛИЕНТ")
 
-	var layer := CanvasLayer.new()
-	add_child(layer)
-	_hud = Label.new()
-	_hud.position = Vector2(12, 8)
-	_hud.add_theme_color_override("font_color", Color.WHITE)
-	_hud.add_theme_color_override("font_outline_color", Color.BLACK)
-	_hud.add_theme_constant_override("outline_size", 5)
-	layer.add_child(_hud)
+	_hud = HUD_LABEL_SCRIPT.build(self)
 
 
 ## Статус меняется редко (пара раз за сессию: подключение, спавн, обрыв) —

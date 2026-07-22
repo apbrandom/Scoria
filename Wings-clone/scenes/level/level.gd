@@ -41,6 +41,7 @@ const MATCH_MANAGER_SCRIPT := preload("res://scripts/match/match_manager.gd")
 ## preload по пути — та же причина, что у MATCH_MANAGER_SCRIPT выше (свежий
 ## class_name может не резолвиться headless-запуском до пересканирования кэша).
 const GLOW_ENV_SCRIPT := preload("res://scripts/level/glow_environment.gd")
+const HUD_LABEL_SCRIPT := preload("res://scripts/level/hud_label.gd")
 const FALLBACK_SIZE := Vector2i(1200, 1200)
 const FALLBACK_SEED := 1337
 const MENU_SCENE := "res://scenes/menu/main_menu.tscn"
@@ -127,14 +128,7 @@ func _ready() -> void:
 	add_child(_cam)
 	_cam.make_current()
 
-	var layer := CanvasLayer.new()
-	add_child(layer)
-	_hud = Label.new()
-	_hud.position = Vector2(12, 8)
-	_hud.add_theme_color_override("font_color", Color.WHITE)
-	_hud.add_theme_color_override("font_outline_color", Color.BLACK)
-	_hud.add_theme_constant_override("outline_size", 5)
-	layer.add_child(_hud)
+	_hud = HUD_LABEL_SCRIPT.build(self)
 
 
 func _process(_delta: float) -> void:

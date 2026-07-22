@@ -16,6 +16,7 @@ const MASK_PATH := "res://levels/test/mask.png"
 const RADII: Array[int] = [8, 16, 32, 64, 100]
 const FALLBACK_SIZE := Vector2i(1200, 1200)
 const FALLBACK_SEED := 1337
+const HUD_LABEL_SCRIPT := preload("res://scripts/level/hud_label.gd")
 
 var _palette: TerrainPalette
 var _terrain: Terrain
@@ -78,14 +79,7 @@ func _ready() -> void:
 	add_child(_cam)
 	_cam.make_current()
 
-	var layer := CanvasLayer.new()
-	add_child(layer)
-	_hud = Label.new()
-	_hud.position = Vector2(12, 8)
-	_hud.add_theme_color_override("font_color", Color(1, 1, 1))
-	_hud.add_theme_color_override("font_outline_color", Color(0, 0, 0))
-	_hud.add_theme_constant_override("outline_size", 5)
-	layer.add_child(_hud)
+	_hud = HUD_LABEL_SCRIPT.build(self)
 
 	var args := OS.get_cmdline_user_args()
 	if "--autocarve" in args:
