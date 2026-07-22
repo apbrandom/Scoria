@@ -51,7 +51,7 @@ func setup(chunk_w: int, chunk_h: int, origin: Vector2i) -> void:
 	empty_bytes.resize(cw * ch * 2)
 	_sprite = Sprite2D.new()
 	_sprite.centered = false
-	_sprite.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	_sprite.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
 	add_child(_sprite)
 	_shape = ConcavePolygonShape2D.new()
 	_shape_node = CollisionShape2D.new()
