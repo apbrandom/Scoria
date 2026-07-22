@@ -1,4 +1,4 @@
-[gd_scene load_steps=7 format=3]
+[gd_scene load_steps=8 format=3]
 
 [ext_resource type="Script" path="res://scenes/ship/ship.gd" id="1_ship"]
 
@@ -19,6 +19,14 @@ fill_from = Vector2(0.5, 0.5)
 [sub_resource type="Gradient" id="Gradient_thrust_color"]
 offsets = PackedFloat32Array(0, 0.4, 1)
 colors = PackedColorArray(1, 1, 0.8, 1, 1, 0.5, 0.1, 0.9, 1, 0.15, 0.05, 0)
+
+[sub_resource type="SceneReplicationConfig" id="SceneReplicationConfig_ship"]
+properties/0/path = NodePath(".:global_position")
+properties/0/spawn = true
+properties/0/replication_mode = 1
+properties/1/path = NodePath(".:aim_angle")
+properties/1/spawn = true
+properties/1/replication_mode = 1
 
 [sub_resource type="ParticleProcessMaterial" id="ParticleProcessMaterial_thrust"]
 direction = Vector3(0, 1, 0)
@@ -65,3 +73,6 @@ lifetime = 0.35
 local_coords = false
 texture = SubResource("GradientTexture2D_thrust")
 process_material = SubResource("ParticleProcessMaterial_thrust")
+
+[node name="NetSync" type="MultiplayerSynchronizer" parent="."]
+replication_config = SubResource("SceneReplicationConfig_ship")

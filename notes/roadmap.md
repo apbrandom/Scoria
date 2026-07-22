@@ -114,8 +114,12 @@
   - [x] `RemoteInput` — сетевой провайдер `ShipInput` (§2.3) + `ShipInputSync`:
         интенты владельца доезжают в RemoteInput хоста по RPC (devlog §24,
         `tools/test_net_input`). Проверен только путь ВВОДА.
-  - [ ] Синхронизация корабля хост→клиенты (позиция/поворот) через
-        `MultiplayerSynchronizer` — обратной синхронизации ещё нет.
+  - [x] Синхронизация корабля хост→клиенты (позиция/`aim_angle`) через
+        `MultiplayerSynchronizer` (узел `NetSync` в ship.tscn, authority
+        дефолтная = 1 = хост; не-authority — kinematic-витрина, физику не
+        считает, devlog §25, `tools/test_net_ship_sync`). **Не входит**:
+        интерполяция/сглаживание видимого ~1-тикового лага, репликация
+        визуала Thrust (devlog §25.5) — декоративные пробелы, не блокируют.
   - [ ] Carve рельефа по reliable_ordered `@rpc` + локальный детерминированный
         replay (`MultiplayerSynchronizer` не тянет `Image`/`BitMap` — devlog §23.1).
   - [ ] Вплести NetworkManager в реальный поток (меню host/join → Level) —

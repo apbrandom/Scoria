@@ -89,6 +89,16 @@ func _ready() -> void:
 	equip_primary(primary_weapon)
 	equip_secondary(secondary_weapon)
 	hull_changed.emit(hull, data.max_hull)
+	# Host-authoritative (architecture.md «Сеть: модель синхронизации»): только
+	# authority (хост; оффлайн — тоже "хост", см. _is_authority()) симулирует
+	# физику корабля. У всех остальных копия замирает как kinematic (двигается
+	# только присвоением transform, не силами) — позицию/aim_angle ей несёт
+	# NetSync (MultiplayerSynchronizer, дефолтная authority узла = 1, отдельно
+	# выставлять не нужно). Без freeze тело продолжало бы падать под
+	# gravity_scale локально и спорило бы само с собой каждый сетевой тик.
+	if not _is_authority():
+		freeze = true
+		freeze_mode = RigidBody2D.FREEZE_MODE_KINEMATIC
 
 
 ## Применяет глобальные правила матча (autoload GameRules) к физике этого корабля.
@@ -135,7 +145,26 @@ func _apply_aim_angle() -> void:
 	_thrust.rotation = aim_angle
 
 
+## Обёртка над is_multiplayer_authority(): без назначенного сетевого пира штатный
+## multiplayer.get_unique_id() шумит в лог ERR_FAIL_COND_V_MSG движка (см.
+## scene_multiplayer.cpp), хотя функционально всё равно считает себя id=1. Тот же
+## случай уже решён в NetworkManager.is_host()/unique_id() — там тоже "нет пира"
+## трактуется как "оффлайн = сам себе хост" явной проверкой, а не походом за
+## unique_id вслепую. Здесь то же самое ради тишины в логе.
+func _is_authority() -> bool:
+	if multiplayer.multiplayer_peer == null:
+		return true
+	return is_multiplayer_authority()
+
+
 func _physics_process(delta: float) -> void:
+	if not _is_authority():
+		# Не authority: этот корабль здесь — немая витрина, чужое состояние несёт
+		# NetSync (aim_angle приходит сырым полем без побочных эффектов, поэтому
+		# визуал/дуло/хвост подтягиваем явно). Ввод не читаем и не двигаем
+		# RigidBody2D сами — тело заморожено (см. _ready()).
+		_apply_aim_angle()
+		return
 	if not _alive or input == null:
 		return
 	_crash_cd = maxf(_crash_cd - delta, 0.0)
@@ -192,7 +221,7 @@ func _fire(weapon: WeaponData) -> void:
 ## скольжении вдоль стены выше порога урон будет тикать раз в 0.2 с, а не 60 раз
 ## в секунду — накопительный износ от долгого трения, а не мгновенная казнь.
 func _integrate_forces(state: PhysicsDirectBodyState2D) -> void:
-	if not _alive or data == null or _crash_cd > 0.0:
+	if not _is_authority() or not _alive or data == null or _crash_cd > 0.0:
 		return
 	var impulse := 0.0
 	var impact_pos := Vector2.ZERO
