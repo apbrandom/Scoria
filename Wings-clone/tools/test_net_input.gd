@@ -105,6 +105,31 @@ func _make_intents(thrust: bool, turn: float, f1: bool, f2: bool) -> ShipInput:
 
 
 func _run() -> void:
+	# 0. RemoteInput.apply_packed(): пакет неправильного размера должен быть
+	#    молча проигнорирован (push_warning, не исключение), поля остаются
+	#    как были — единственная ветка этого файла, не завязанная на реальную
+	#    сеть (весь остальной прогон гоняет только КОРРЕКТНЫЕ пакеты через
+	#    настоящий RPC, эта ветка нигде больше не покрывалась).
+	var ri := RemoteInput.new()
+	ri.thrust = true
+	ri.turn = 0.25
+	ri.fire_primary = true
+	ri.fire_secondary = false
+	ri.apply_packed([1.0, 2.0, 3.0])  # 3 элемента вместо 4
+	_check("apply_packed игнорирует короткий пакет (поля не тронуты)",
+		ri.thrust == true and is_equal_approx(ri.turn, 0.25)
+			and ri.fire_primary == true and ri.fire_secondary == false,
+		"thrust=%s turn=%.2f fire1=%s fire2=%s" % [ri.thrust, ri.turn, ri.fire_primary, ri.fire_secondary])
+	ri.apply_packed([1.0, 2.0, 3.0, 4.0, 5.0])  # 5 элементов вместо 4
+	_check("apply_packed игнорирует длинный пакет (поля не тронуты)",
+		ri.thrust == true and is_equal_approx(ri.turn, 0.25),
+		"turn=%.2f" % ri.turn)
+	ri.apply_packed([false, -0.5, false, true])  # корректный размер — путь применения
+	_check("apply_packed применяет корректный пакет",
+		ri.thrust == false and is_equal_approx(ri.turn, -0.5)
+			and ri.fire_primary == false and ri.fire_secondary == true,
+		"thrust=%s turn=%.2f fire1=%s fire2=%s" % [ri.thrust, ri.turn, ri.fire_primary, ri.fire_secondary])
+
 	# --- соединение ---
 	var host_err := _server_nm.host(PORT)
 	_check("host() поднял сервер", host_err == OK, "err=%s" % error_string(host_err))
