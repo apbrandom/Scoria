@@ -717,3 +717,92 @@ func _run() -> void:
 			str(erosion_depth) if erosion_depth >= 0 else "н/д — ничего не тронуто")
 		)
 	erosion_terrain.remove_from_group("terrain")
+
+	# 16. Ship.CRASH_COOLDOWN (0.2 с): два столкновения о стену внутри окна должны
+	#     дать РОВНО одно событие урона/carve, а не два (антидребезг при затяжном
+	#     скольжении/повторном контакте — см. комментарий у _crash_cd в ship.gd).
+	#     Столкновения форсируем прямым проездом в стену без гравитации
+	#     (gravity_scale=0) на проверенной скорости (320 px/с — та же величина,
+	#     что уже надёжно даёт "удар", не туннелирование, в секциях 8-9 выше) —
+	#     момент и скорость удара под контролем теста, а не отданы свободному
+	#     падению. Ждём не по числу кадров (хрупко), а по факту — читаем сам
+	#     _crash_cd (доступ к "приватному" полю другого скрипта — тот же приём,
+	#     что уже есть в bench_debris.gd; GDScript подчёркивание не запрещает
+	#     доступ снаружи, только соглашение).
+	var cd_terrain := Terrain.new()
+	cd_terrain.palette = PALETTE
+	cd_terrain.position = Vector2(400000, 400000)
+	add_child(cd_terrain)
+	var cd_vis := Image.create(400, 100, false, Image.FORMAT_RGBA8)
+	cd_vis.fill(Color(0, 0, 0, 0))
+	const CD_WALL_X := 200
+	cd_vis.fill_rect(Rect2i(CD_WALL_X, 0, 400 - CD_WALL_X, 100), Color(0.5, 0.3, 0.1, 1.0))
+	cd_terrain.load_level(cd_vis)
+	cd_terrain.add_to_group("terrain")
+	await _step(1)
+
+	var cd_ship := _make_ship()
+	cd_ship.gravity_scale = 0.0
+	var cd_start := cd_terrain.position + Vector2(CD_WALL_X - 10, 50)
+	cd_ship.global_position = cd_start
+	var cd_events: Array = []
+	cd_ship.crashed.connect(func(v: float): cd_events.append(v))
+	await _step(1)
+
+	cd_ship.linear_velocity = Vector2(320, 0)
+	var cd_wait1 := 0
+	while cd_events.is_empty() and cd_wait1 < 30:
+		await _step(1)
+		cd_wait1 += 1
+	_check("первый удар о стену засчитан", cd_events.size() == 1,
+		"событий=%d за %d кадров" % [cd_events.size(), cd_wait1])
+	_check("после удара cooldown реально взведён", cd_ship._crash_cd > 0.0,
+		"_crash_cd=%.3f" % cd_ship._crash_cd)
+
+	# Второй удар — форсируем СРАЗУ, пока _crash_cd ещё > 0 (гарантированно внутри
+	# окна debounce; не респавним cd_ship, respawn() сам обнуляет _crash_cd —
+	# это было бы жульничеством теста, а не проверкой антидребезга).
+	cd_ship.global_position = cd_start
+	cd_ship.linear_velocity = Vector2(320, 0)
+	await _step(3)
+	_check("второй удар ВНУТРИ окна debounce не даёт второго события",
+		cd_events.size() == 1,
+		"событий=%d (_crash_cd=%.3f)" % [cd_events.size(), cd_ship._crash_cd])
+
+	# Досчитываем cooldown до нуля — третий удар должен снова засчитаться.
+	var cd_wait2 := 0
+	while cd_ship._crash_cd > 0.0 and cd_wait2 < 30:
+		await _step(1)
+		cd_wait2 += 1
+	_check("cooldown истёк сам по себе", cd_ship._crash_cd == 0.0,
+		"_crash_cd=%.3f после %d кадров" % [cd_ship._crash_cd, cd_wait2])
+	cd_ship.global_position = cd_start
+	cd_ship.linear_velocity = Vector2(320, 0)
+	var cd_wait3 := 0
+	while cd_events.size() < 2 and cd_wait3 < 30:
+		await _step(1)
+		cd_wait3 += 1
+	_check("третий удар ПОСЛЕ истечения cooldown — новое событие",
+		cd_events.size() == 2, "событий=%d" % cd_events.size())
+	cd_terrain.remove_from_group("terrain")
+
+	# 17. Terrain.find_clear_spawn(): путь "за attempts попыток не нашлось места"
+	#     не покрывался вообще (только успешный путь, секция 10) — терраин
+	#     целиком INDESTRUCTIBLE (ни одной клетки, где carve_circle способен
+	#     расчистить место) обязан вернуть Vector2i(-1,-1), а не зависнуть и не
+	#     упасть (attempts мало — тест обязан завершиться быстро в любом случае).
+	var solid_terrain := Terrain.new()
+	solid_terrain.palette = PALETTE
+	solid_terrain.position = Vector2(500000, 500000)
+	add_child(solid_terrain)
+	var solid_vis := Image.create(200, 200, false, Image.FORMAT_RGBA8)
+	solid_vis.fill(Color(0.5, 0.5, 0.5, 1.0))
+	var solid_mask := Image.create(200, 200, false, Image.FORMAT_RGBA8)
+	solid_mask.fill(PALETTE.get_mask_color(TerrainPalette.Cls.INDESTRUCTIBLE))
+	solid_terrain.load_level(solid_vis, solid_mask)
+	await _step(1)
+
+	var not_found := solid_terrain.find_clear_spawn(20, 10, 5)
+	_check("find_clear_spawn на сплошном Камне возвращает \"не нашлось\" (-1,-1)",
+		not_found == Vector2i(-1, -1), "found=%s" % not_found)
+	solid_terrain.remove_from_group("terrain")
