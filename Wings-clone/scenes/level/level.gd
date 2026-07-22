@@ -38,6 +38,9 @@ const BOMB_DATA := preload("res://data/weapons/bomb.tres")
 ## .godot/global_script_class_cache.cfg (та же грабля уже ловилась в этой
 ## сессии на TerrainDebris, см. terrain.gd::TerrainDebrisScript).
 const MATCH_MANAGER_SCRIPT := preload("res://scripts/match/match_manager.gd")
+## preload по пути — та же причина, что у MATCH_MANAGER_SCRIPT выше (свежий
+## class_name может не резолвиться headless-запуском до пересканирования кэша).
+const GLOW_ENV_SCRIPT := preload("res://scripts/level/glow_environment.gd")
 const FALLBACK_SIZE := Vector2i(1200, 1200)
 const FALLBACK_SEED := 1337
 const MENU_SCENE := "res://scenes/menu/main_menu.tscn"
@@ -112,6 +115,8 @@ func _ready() -> void:
 		add_child(ship)
 		_ships.append(ship)
 	_match.setup(_ships)
+
+	add_child(GLOW_ENV_SCRIPT.build())
 
 	_cam = Camera2D.new()
 	_cam.position_smoothing_enabled = true

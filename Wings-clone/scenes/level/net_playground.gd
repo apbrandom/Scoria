@@ -54,6 +54,9 @@ const FALLBACK_SIZE := Vector2i(1200, 1200)
 const FALLBACK_SEED := 1337
 const SHIP_SCENE := preload("res://scenes/ship/ship.tscn")
 const SHIP_DATA := preload("res://data/ships/normal.tres")
+## preload по пути — свежий class_name может не резолвиться headless-запуском
+## до пересканирования кэша (та же грабля, что уже ловилась на TerrainDebris).
+const GLOW_ENV_SCRIPT := preload("res://scripts/level/glow_environment.gd")
 const MENU_SCENE := "res://scenes/menu/main_menu.tscn"
 
 ## Открытое небо у верхнего края карты — безопасно и без карва при любом
@@ -136,6 +139,8 @@ func _ready() -> void:
 			var join_err := _net.join("127.0.0.1")
 			_set_status("порт занят — подключаюсь как клиент к 127.0.0.1..." \
 				if join_err == OK else "join() не удался: %s" % error_string(join_err))
+
+	add_child(GLOW_ENV_SCRIPT.build())
 
 	_cam = Camera2D.new()
 	_cam.position_smoothing_enabled = true
