@@ -14,7 +14,10 @@ extends RigidBody2D
 
 signal hull_changed(hull: float, max_hull: float)
 signal crashed(speed: float)
-signal destroyed
+## killer — кто нанёс смертельный урон (см. take_damage), null — смерть без
+## чужого участия (столкновение с рельефом). MatchManager трактует null или
+## killer == self (самострел) как самоубийство.
+signal destroyed(killer: Node)
 
 ## Защита от многократного срабатывания crash-урона за одно столкновение, сек.
 ## Не применяется к урону от оружия (Explosion.take_damage) — это разовые события,
@@ -250,7 +253,11 @@ func _carve_crash_site(terrain: Terrain, at: Vector2, over_threshold: float) -> 
 ## Публичный вход для любого источника урона (взрыв оружия, крэш). Не имеет
 ## собственного дребезга — вызывающий отвечает за то, чтобы не звать это каждый
 ## кадр от одной и той же причины (crash — через _crash_cd, взрыв — разовое событие).
-func take_damage(amount: float) -> void:
+## attacker — кто нанёс урон (Explosion.shooter у оружия), null по умолчанию —
+## столкновение с рельефом само так и зовёт, вторым аргументом не задаваясь,
+## и это верная семантика: смерть без чужого участия = самоубийство (см.
+## destroyed(killer) и MatchManager).
+func take_damage(amount: float, attacker: Node = null) -> void:
 	if not _alive or amount <= 0.0:
 		return
 	# ship_strength (правило матча, GameRules) делит ВЕСЬ входящий урон — и от
@@ -259,12 +266,12 @@ func take_damage(amount: float) -> void:
 	hull = maxf(hull - amount / maxf(GameRules.ship_strength, 0.01), 0.0)
 	hull_changed.emit(hull, data.max_hull)
 	if hull <= 0.0:
-		_die()
+		_die(attacker)
 
 
-func _die() -> void:
+func _die(killer: Node = null) -> void:
 	_alive = false
-	destroyed.emit()
+	destroyed.emit(killer)
 	_thrust.emitting = false
 	# взрыв/обломки корабля — позже (notes/roadmap.md); пока просто убираем со сцены
 	freeze = true

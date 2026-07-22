@@ -12,6 +12,11 @@ extends Node2D
 ## Множитель радиуса разрушения рельефа. 0 — рельеф не трогаем.
 @export var terrain_power: float = 1.0
 @export var damage: float = 20.0
+## Кто вызвал этот взрыв (обычно Projectile.shooter — корабль, выпустивший
+## снаряд). НЕ @export, как и Projectile.shooter: это атрибуция конкретного
+## события, а не тюнинг-параметр ресурса. Идёт в Ship.take_damage() вторым
+## аргументом — MatchManager читает его из Ship.destroyed(killer) для счёта.
+var shooter: Node = null
 
 @onready var _flash: Polygon2D = $Flash
 
@@ -59,4 +64,4 @@ func _damage_ships() -> void:
 	for hit in space.intersect_shape(query, 8):
 		var body = hit["collider"]
 		if body is Ship:
-			body.take_damage(damage)
+			body.take_damage(damage, shooter)

@@ -67,6 +67,7 @@ func _detonate() -> void:
 	exp.blast_radius = weapon.blast_radius
 	exp.terrain_power = weapon.terrain_power
 	exp.damage = weapon.damage
+	exp.shooter = shooter
 	get_parent().add_child(exp)
 	queue_free()
 

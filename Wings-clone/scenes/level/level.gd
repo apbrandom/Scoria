@@ -1,20 +1,25 @@
 ## Level — канонический игровой контейнер и главная сцена проекта (Play = играть).
 ##
 ## Пришёл на смену scenes/ship/ship_playground: та песочница делала ровно это же, но
-## жила в scenes/ship/ и не знала про правила матча. Level собирает рельеф + корабль
-## игрока с локальным вводом, следит камерой, показывает HUD и — главное — является
-## тем узлом, к которому дальше подключится MatchManager (счёт, «последний выживший
-## летит на базу», смена уровней — см. notes/architecture.md §2.1, §6, шаг 6).
+## жила в scenes/ship/ и не знала про правила матча. Level собирает рельеф + два
+## корабля с локальным вводом (хотсит), следит общей камерой за обоими, показывает
+## HUD и владеет MatchManager (счёт, респавн, условие победы дезматча — см.
+## scripts/match/match_manager.gd, notes/architecture.md §2.1, §6 шаг 6). Режим
+## "последний выживший летит на базу" и смена уровней — не здесь, требует системы
+## Bases, которой ещё нет (notes/roadmap.md).
 ##
-## Управление: ← → поворот · ↑ тяга · Space пулемёт · Ctrl ракетница ·
-## R респавн · F1 коллизия рельефа · колесо мыши зум · ESC выход.
+## Управление: P1 ← → поворот · ↑ тяга · Space пулемёт · Ctrl ракетница ·
+## P2 A D поворот · W тяга · Q пулемёт · E ракетница ·
+## R — рестарт матча (после победы) · F1 коллизия рельефа · колесо мыши зум · ESC выход.
 ##
-## Структура по architecture.md §2.2 упрощена под v0.1 (один корабль): контейнеры
-## Ships/Projectiles/Bases и ParallaxBackground появятся, когда появятся несколько
-## кораблей и базы (шаг 6). Сейчас корабль — прямой потомок Level, снаряды рождаются
-## рядом (Ship._fire добавляет их в get_parent()), рельеф ищется через группу
-## "terrain" независимо от места в дереве. Правила матча (гравитация/прочность/…)
-## корабль берёт сам из autoload GameRules в Ship.apply_rules().
+## Структура по architecture.md §2.2 упрощена: контейнеры Ships/Projectiles/Bases
+## не заведены — MatchManager и HUD уже имеют прямой доступ к обоим кораблям через
+## _ships: Array[Ship], а снаряды как рождались прямыми потомками Level
+## (Ship._fire добавляет их в get_parent()), так и рождаются — заводить контейнер
+## сейчас без Bases был бы половинчатый шаг без пользы. Рельеф ищется через
+## группу "terrain" независимо от места в дереве. Правила матча
+## (гравитация/прочность/...) корабль берёт сам из autoload GameRules в
+## Ship.apply_rules(); условие победы (kills_per_level) читает оттуда же MatchManager.
 extends Node2D
 
 const PALETTE_PATH := "res://data/terrain/wings_classes.tres"
@@ -24,19 +29,36 @@ const SHIP_SCENE := preload("res://scenes/ship/ship.tscn")
 const SHIP_DATA := preload("res://data/ships/normal.tres")
 const DUMBFIRE_DATA := preload("res://data/weapons/dumbfire.tres")
 const BOMB_DATA := preload("res://data/weapons/bomb.tres")
+## preload по пути, не голый MatchManager.new() — свежий class_name может не
+## резолвиться по идентификатору в headless-запуске, пока не обновится
+## .godot/global_script_class_cache.cfg (та же грабля уже ловилась в этой
+## сессии на TerrainDebris, см. terrain.gd::TerrainDebrisScript).
+const MATCH_MANAGER_SCRIPT := preload("res://scripts/match/match_manager.gd")
 const FALLBACK_SIZE := Vector2i(1200, 1200)
 const FALLBACK_SEED := 1337
-const SPAWN_CLEAR_RADIUS := 48
-## Отступ зоны спавна от края уровня, px — не появляться впритык к границе мира.
-const SPAWN_MARGIN := 60
+const PLAYER_COUNT := 2
+
+## Камера кадрирует ОБА корабля: зажимаем зум сверху/снизу и оставляем запас
+## по краям области, в которую должны поместиться оба (не впритык к краю экрана).
+const CAM_MIN_ZOOM := 0.6
+const CAM_MAX_ZOOM := 1.5
+const CAM_PADDING := 220.0
+## Колесо мыши крутит МНОЖИТЕЛЬ поверх автозума (не абсолютный зум напрямую,
+## как было при одном корабле) — тот же диапазон ручного управления, что и
+## раньше, только поверх динамической рамки на двоих.
+const ZOOM_WHEEL_STEP := 1.1
+const ZOOM_MULT_MIN := 0.5
+const ZOOM_MULT_MAX := 2.0
 
 var _palette: TerrainPalette
 var _terrain: Terrain
-var _ship: Ship
+var _match: MatchManager
+var _ships: Array[Ship] = []
+var _last_alive_pos: Dictionary = {}   # Ship -> Vector2, для камеры пока корабль мёртв
 var _cam: Camera2D
+var _zoom_mult := 1.0
 var _hud: Label
 var _debug: TerrainDebugDraw
-var _spawn := Vector2.ZERO
 
 
 func _ready() -> void:
@@ -64,20 +86,30 @@ func _ready() -> void:
 	_debug.visible = false
 	add_child(_debug)
 
-	_spawn = _pick_spawn()
+	_match = MATCH_MANAGER_SCRIPT.new()
+	_match.terrain = _terrain
+	add_child(_match)
 
-	_ship = SHIP_SCENE.instantiate()
-	_ship.data = SHIP_DATA
-	_ship.primary_weapon = DUMBFIRE_DATA
-	_ship.secondary_weapon = BOMB_DATA
-	_ship.input = LocalInput.new(1)
-	_ship.position = _spawn
-	_ship.destroyed.connect(_on_ship_destroyed)
-	add_child(_ship)
+	# Позиция выставляется ДО add_child, как и раньше у одного корабля — спавны
+	# теперь считает MatchManager (с разнесением, чтобы не родиться друг на друге).
+	var spawns := _match.pick_spawns(PLAYER_COUNT)
+	for i in PLAYER_COUNT:
+		var ship: Ship = SHIP_SCENE.instantiate()
+		ship.data = SHIP_DATA
+		ship.primary_weapon = DUMBFIRE_DATA
+		ship.secondary_weapon = BOMB_DATA
+		ship.input = LocalInput.new(i + 1)
+		ship.position = spawns[i]
+		add_child(ship)
+		_ships.append(ship)
+	_match.setup(_ships)
 
 	_cam = Camera2D.new()
-	_cam.zoom = Vector2.ONE * 1.3
 	_cam.position_smoothing_enabled = true
+	_cam.limit_left = 0
+	_cam.limit_top = 0
+	_cam.limit_right = _terrain.size.x
+	_cam.limit_bottom = _terrain.size.y
 	add_child(_cam)
 	_cam.make_current()
 
@@ -104,8 +136,7 @@ func _load_image(path: String) -> Image:
 
 
 func _process(_delta: float) -> void:
-	if _ship != null and _cam != null:
-		_cam.position = _ship.global_position
+	_update_camera()
 	_update_hud()
 
 
@@ -113,7 +144,8 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
 		match event.keycode:
 			KEY_R:
-				_respawn()
+				if _match.is_match_over():
+					_match.restart_match()
 			KEY_F1:
 				_debug.visible = not _debug.visible
 				if _debug.visible:
@@ -123,58 +155,65 @@ func _unhandled_input(event: InputEvent) -> void:
 	elif event is InputEventMouseButton and event.pressed:
 		match event.button_index:
 			MOUSE_BUTTON_WHEEL_UP:
-				_cam.zoom = (_cam.zoom * 1.1).clampf(0.3, 4.0)
+				_zoom_mult = clampf(_zoom_mult * ZOOM_WHEEL_STEP, ZOOM_MULT_MIN, ZOOM_MULT_MAX)
 			MOUSE_BUTTON_WHEEL_DOWN:
-				_cam.zoom = (_cam.zoom / 1.1).clampf(0.3, 4.0)
+				_zoom_mult = clampf(_zoom_mult / ZOOM_WHEEL_STEP, ZOOM_MULT_MIN, ZOOM_MULT_MAX)
 
 
-## Случайное чистое место — не фиксированная точка. Terrain.find_clear_spawn() сам
-## избегает Камня (его нельзя расчистить, см. terrain.gd §16 devlog) — обычную
-## расчистку через carve_circle() он делает внутри. Крайний случай (не нашлось места
-## за отведённые попытки) маловероятен при разумной доле камня, но на всякий случай
-## не оставляем корабль без места: берём центр и чистим напрямую, что бы там ни было.
-func _pick_spawn() -> Vector2:
-	var p := _terrain.find_clear_spawn(SPAWN_CLEAR_RADIUS, SPAWN_MARGIN)
-	if p == Vector2i(-1, -1):
-		push_warning("Не нашлось чистого места для спавна — беру центр уровня")
-		p = _terrain.size / 2
-		_terrain.carve_circle(p, SPAWN_CLEAR_RADIUS)
-		_terrain.flush_dirty()
-	return Vector2(p)
+## Общая камера на двоих: центр — середина между кораблями, зум — по расстоянию
+## между ними (дальше друг от друга — шире план). Мёртвый корабль не дёргает
+## рамку на место своей гибели — держим последнюю известную ЖИВУЮ позицию, пока
+## он не воскреснет.
+func _update_camera() -> void:
+	if _cam == null or _ships.is_empty():
+		return
+	var pts: Array[Vector2] = []
+	for ship in _ships:
+		if not is_instance_valid(ship):
+			continue
+		if ship.is_alive():
+			_last_alive_pos[ship] = ship.global_position
+		pts.append(_last_alive_pos.get(ship, ship.global_position))
+	if pts.is_empty():
+		return
 
+	var min_p := pts[0]
+	var max_p := pts[0]
+	for p in pts:
+		min_p = Vector2(minf(min_p.x, p.x), minf(min_p.y, p.y))
+		max_p = Vector2(maxf(max_p.x, p.x), maxf(max_p.y, p.y))
+	_cam.position = (min_p + max_p) / 2.0
 
-func _respawn() -> void:
-	_spawn = _pick_spawn()
-	_ship.respawn(_spawn)
-
-
-func _on_ship_destroyed() -> void:
-	await get_tree().create_timer(1.0).timeout
-	if is_instance_valid(_ship) and not _ship.is_alive():
-		_respawn()
+	var span := max_p - min_p
+	var needed := Vector2(maxf(span.x + CAM_PADDING * 2.0, 1.0), maxf(span.y + CAM_PADDING * 2.0, 1.0))
+	var vp := get_viewport_rect().size
+	var auto_zoom := minf(vp.x / needed.x, vp.y / needed.y)
+	_cam.zoom = Vector2.ONE * clampf(auto_zoom * _zoom_mult, CAM_MIN_ZOOM, CAM_MAX_ZOOM)
 
 
 func _update_hud() -> void:
-	if _ship == null:
+	if _ships.is_empty():
 		return
-	var spd := _ship.linear_velocity.length()
-	var dead_line := "" if _ship.is_alive() else "  >>> УНИЧТОЖЕН — R для респавна <<<"
-	# Строка правил показывает только НЕнейтральные множители — при значениях по
-	# умолчанию (всё 1.0) её нет, чтобы не загромождать HUD. Так виден шов GameRules:
-	# покрутил правило — увидел его в игре.
+	var lines: Array[String] = []
+	lines.append("FPS %d      уровень %dx%d" % [
+		Engine.get_frames_per_second(), _terrain.size.x, _terrain.size.y])
+	for i in _ships.size():
+		var ship := _ships[i]
+		var status := "" if ship.is_alive() else " — уничтожен"
+		lines.append("P%d %s: прочность %d/%d   счёт %d%s" % [
+			i + 1, ship.data.display_name, ship.hull, ship.data.max_hull,
+			_match.get_score(ship), status])
 	var rules := _rules_line()
-	_hud.text = "\n".join([
-		"FPS %d      уровень %dx%d" % [
-			Engine.get_frames_per_second(), _terrain.size.x, _terrain.size.y],
-		"корабль: %s" % _ship.data.display_name,
-		"прочность %d/%d" % [_ship.hull, _ship.data.max_hull],
-		"скорость %d       угол %d°" % [spd, rad_to_deg(_ship.aim_angle)],
-		rules,
-		"",
-		"← → поворот · ↑ тяга · Space пулемёт · Ctrl ракетница",
-		"R респавн · F1 коллизия · колесо зум · ESC выход",
-		dead_line,
-	])
+	if rules != "":
+		lines.append(rules)
+	lines.append("")
+	lines.append("P1: ← → поворот · ↑ тяга · Space пулемёт · Ctrl ракетница")
+	lines.append("P2: A D поворот · W тяга · Q пулемёт · E ракетница")
+	lines.append("F1 коллизия · колесо зум · ESC выход")
+	if _match.is_match_over():
+		lines.append(">>> P%d ПОБЕДИЛ (%d килов) — R для рестарта матча <<<" % [
+			_ships.find(_match.winner()) + 1, _match.get_score(_match.winner())])
+	_hud.text = "\n".join(lines)
 
 
 ## Показывает активные правила матча, только если они отличаются от нейтральных.
