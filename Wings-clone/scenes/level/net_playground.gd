@@ -3,29 +3,35 @@
 ## там сервер и клиент жили в одном процессе на двух MultiplayerAPI; здесь
 ## проверяется настоящий ENet по loopback между двумя ОС-процессами/окнами).
 ##
-## Роль (хост/клиент) БЕЗ ФЛАГОВ определяется сама: кто первым занял
-## DEFAULT_PORT — тот хост, остальные не смогли забиндиться → джойнятся на
-## 127.0.0.1 (см. _ready). Бинд UDP-порта атомарен на уровне ОС, гонки без
-## однозначного победителя не бывает. Это сделано специально ради Godot'овского
-## Debug → Customize Run Instances / Run Multiple Instances: та кнопка запускает
-## все копии ОДНОЙ и той же командой (Main Run Args общие на все инстансы, per-
-## instance аргументов Godot 4.3+ не даёт — проверено), так что через
-## --host/--join разные роли этим способом не назначить. Запуск:
-##   Godot editor → Debug → Customize Run Instances → Enable Multiple Instances,
-##   2 инстанса → Play — оба окна сами разберутся, кто есть кто.
-## Явные флаги остаются для случая, где авто не годится (две РАЗНЫЕ машины —
-## порты независимы, гонки за bind нет): `-- --host` форсирует хоста,
-## `-- --join=<ip>` — клиента на конкретный адрес. Без Godot editor, из
-## терминала (2 отдельных терминала, из каталога Wings-clone):
-##   godot --path . res://scenes/level/net_playground.tscn        (оба окна —
-##   одна и та же команда, роль определится сама)
+## Роль (хост/клиент) заказчик хочет ВИДЕТЬ и ВЫБИРАТЬ явно, а не угадывать
+## гонкой — основной путь теперь через главное меню (scenes/menu/main_menu.gd):
+## «Играть» → «По сети» → «Создать игру (хост)» / «Присоединиться» (последняя
+## всегда бьёт в 127.0.0.1 — локальное тестирование в двух окнах одного
+## компьютера). Выбор кнопкой кладётся в GameRules.net_forced_role ДО
+## change_scene_to_file(net_playground.tscn) — тот же паттерн, что
+## player_count для level.tscn (см. game_rules.gd).
+##
+## Два окна для сетевой проверки на одном компе — Godot editor → Debug →
+## Customize Run Instances → Enable Multiple Instances, 2 инстанса → Play: оба
+## окна открывают ГЛАВНОЕ МЕНЮ (общие Main Run Args не мешают — выбор роли
+## теперь делается кликом ПОСЛЕ запуска, а не аргументом командной строки), в
+## одном жмёте «Создать игру», в другом — «Присоединиться».
+##
+## Автогонка за bind порта (кто первым занял DEFAULT_PORT — тот хост, см.
+## _ready) — фолбэк на случай запуска В ОБХОД МЕНЮ (`.command`-файл,
+## F6 по сцене напрямую): бинд UDP-порта атомарен на уровне ОС, гонки без
+## однозначного победителя не бывает, но выбора не показывает — только для
+## быстрого ручного запуска, не основной путь. Явные CLI-флаги остаются для
+## случая, где ни меню, ни гонка не годятся (две РАЗНЫЕ машины — порты
+## независимы): `-- --host` форсирует хоста, `-- --join=<ip>` — клиента на
+## конкретный адрес.
 ##
 ## Управление в ОБОИХ окнах — экшены p1_* (project.godot): ← → поворот, ↑ тяга.
 ## Оружие сознательно НЕ выдано (primary/secondary_weapon не заданы) — эта
 ## песочница проверяет ТОЛЬКО позицию/aim_angle (devlog §25); стрельба и попадания
 ## по сети ещё не реплицируются, поэтому здесь её и нет, чтобы не создавать
 ## впечатление сломанной механики там, где механики попросту ещё нет.
-## ESC — выход.
+## ESC — назад в главное меню.
 ##
 ## Сознательно НЕ MatchManager и НЕ меню (это будущие roadmap-шаги — devlog §25.6,
 ## «вплетение NetworkManager в реальный поток») — минимум: NetworkManager + два
@@ -48,6 +54,7 @@ const FALLBACK_SIZE := Vector2i(1200, 1200)
 const FALLBACK_SEED := 1337
 const SHIP_SCENE := preload("res://scenes/ship/ship.tscn")
 const SHIP_DATA := preload("res://data/ships/normal.tres")
+const MENU_SCENE := "res://scenes/menu/main_menu.tscn"
 
 ## Открытое небо у верхнего края карты — безопасно и без карва при любом
 ## содержимом реального/фолбэчного уровня.
@@ -92,22 +99,34 @@ func _ready() -> void:
 	_net.connection_failed.connect(func() -> void: _set_status("не удалось подключиться"))
 	_net.host_left.connect(func() -> void: _set_status("хост отключился"))
 
+	# Приоритет источников роли: явные CLI-флаги (межмашинный сценарий, порты
+	# независимы — гонка не поможет и не нужна) > выбор кнопкой в меню
+	# (GameRules.net_forced_role, см. его doc-comment) > автогонка за bind
+	# порта (запуск в обход меню — .command-файл, F6 по сцене напрямую).
 	if forced_join_addr != "":
-		# Явно указан --join=<ip> — форсируем клиента (2 разные машины, гонки
-		# за bind порта нет и не поможет: см. шапку файла).
 		_is_host = false
 		var err := _net.join(forced_join_addr)
 		_set_status("подключаюсь к %s..." % forced_join_addr if err == OK else "join() не удался: %s" % error_string(err))
 	elif _is_host:
-		# --host форсирован явно (тоже случай "2 разные машины").
 		var err := _net.host()
 		_set_status(("хост поднят на порту %d — жду клиента..." % NetworkManager.DEFAULT_PORT) \
 			if err == OK else "host() не удался: %s" % error_string(err))
+	elif GameRules.net_forced_role == "host":
+		_is_host = true
+		var err := _net.host()
+		_set_status(("хост поднят на порту %d — жду клиента..." % NetworkManager.DEFAULT_PORT) \
+			if err == OK else "host() не удался: %s" % error_string(err))
+	elif GameRules.net_forced_role == "join":
+		_is_host = false
+		var err := _net.join("127.0.0.1")
+		_set_status("подключаюсь как клиент к 127.0.0.1..." \
+			if err == OK else "join() не удался: %s" % error_string(err))
 	else:
-		# Ни один флаг не задан — автоопределение (см. шапку файла): пробуем
-		# занять порт первыми; получилось — мы хост; не получилось (порт уже
-		# занят таким же процессом рядом) — значит, кто-то успел раньше, и мы
-		# джойнимся к нему на localhost.
+		# "auto" — ни флага, ни выбора в меню нет: пробуем занять порт первыми;
+		# получилось — мы хост; не получилось (порт уже занят таким же
+		# процессом рядом) — значит, кто-то успел раньше, и мы джойнимся к
+		# нему на localhost. Бинд UDP-порта атомарен на уровне ОС, гонки без
+		# однозначного победителя не бывает.
 		var host_err := _net.host()
 		if host_err == OK:
 			_is_host = true
@@ -214,10 +233,14 @@ func _process(_delta: float) -> void:
 	var lines: Array[String] = []
 	lines.append("Роль: %s   Статус: %s" % ["ХОСТ" if _is_host else "КЛИЕНТ", _status])
 	lines.append("← → поворот, ↑ тяга (оружие не выдано — тест только позиции/поворота)")
-	lines.append("ESC выход")
+	lines.append("ESC меню")
 	_hud.text = "\n".join(lines)
 
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE:
-		get_tree().quit()
+		# Явный disconnect_net() не нужен: смена сцены освобождает весь
+		# поддерево, включая NetworkManager, — пир закрывается вместе с узлом
+		# (у собеседника это выглядит как обычный обрыв связи, peer_left/
+		# host_left), ровно то же самое поведение, что при закрытии окна целиком.
+		get_tree().change_scene_to_file(MENU_SCENE)

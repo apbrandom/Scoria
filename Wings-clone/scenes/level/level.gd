@@ -1,16 +1,20 @@
-## Level — канонический игровой контейнер и главная сцена проекта (Play = играть).
+## Level — канонический игровой контейнер локальной игры (одиночной и хотсит-вдвоём).
+## Открывается из scenes/menu/main_menu.gd, которое перед этим выставляет
+## GameRules.player_count (1 или 2) — сетевой режим здесь не живёт, для него
+## отдельная сцена net_playground.tscn (свой спавн, свой NetworkManager).
 ##
 ## Пришёл на смену scenes/ship/ship_playground: та песочница делала ровно это же, но
-## жила в scenes/ship/ и не знала про правила матча. Level собирает рельеф + два
-## корабля с локальным вводом (хотсит), следит общей камерой за обоими, показывает
+## жила в scenes/ship/ и не знала про правила матча. Level собирает рельеф + 1-2
+## корабля с локальным вводом, следит общей камерой, показывает
 ## HUD и владеет MatchManager (счёт, респавн, условие победы дезматча — см.
 ## scripts/match/match_manager.gd, notes/architecture.md §2.1, §6 шаг 6). Режим
 ## "последний выживший летит на базу" и смена уровней — не здесь, требует системы
 ## Bases, которой ещё нет (notes/roadmap.md).
 ##
 ## Управление: P1 ← → поворот · ↑ тяга · Space пулемёт · Ctrl ракетница ·
-## P2 A D поворот · W тяга · Q пулемёт · E ракетница ·
-## R — рестарт матча (после победы) · F1 коллизия рельефа · колесо мыши зум · ESC выход.
+## P2 (если player_count=2) A D поворот · W тяга · Q пулемёт · E ракетница ·
+## R — рестарт матча (после победы) · F1 коллизия рельефа · колесо мыши зум ·
+## ESC — назад в главное меню.
 ##
 ## Структура по architecture.md §2.2 упрощена: контейнеры Ships/Projectiles/Bases
 ## не заведены — MatchManager и HUD уже имеют прямой доступ к обоим кораблям через
@@ -36,7 +40,7 @@ const BOMB_DATA := preload("res://data/weapons/bomb.tres")
 const MATCH_MANAGER_SCRIPT := preload("res://scripts/match/match_manager.gd")
 const FALLBACK_SIZE := Vector2i(1200, 1200)
 const FALLBACK_SEED := 1337
-const PLAYER_COUNT := 2
+const MENU_SCENE := "res://scenes/menu/main_menu.tscn"
 
 ## Камера кадрирует ОБА корабля: зажимаем зум сверху/снизу и оставляем запас
 ## по краям области, в которую должны поместиться оба (не впритык к краю экрана).
@@ -90,10 +94,15 @@ func _ready() -> void:
 	_match.terrain = _terrain
 	add_child(_match)
 
+	# Сколько кораблей поднимать — решает меню ДО change_scene_to_file (см.
+	# GameRules.player_count): 1 — сольный полёт, 2 — хотсит. clamp на случай,
+	# если сцену открыли напрямую из редактора мимо меню (значение по умолчанию — 2).
+	var player_count := clampi(GameRules.player_count, 1, 2)
+
 	# Позиция выставляется ДО add_child, как и раньше у одного корабля — спавны
 	# теперь считает MatchManager (с разнесением, чтобы не родиться друг на друге).
-	var spawns := _match.pick_spawns(PLAYER_COUNT)
-	for i in PLAYER_COUNT:
+	var spawns := _match.pick_spawns(player_count)
+	for i in player_count:
 		var ship: Ship = SHIP_SCENE.instantiate()
 		ship.data = SHIP_DATA
 		ship.primary_weapon = DUMBFIRE_DATA
@@ -151,7 +160,7 @@ func _unhandled_input(event: InputEvent) -> void:
 				if _debug.visible:
 					_debug.refresh()
 			KEY_ESCAPE:
-				get_tree().quit()
+				get_tree().change_scene_to_file(MENU_SCENE)
 	elif event is InputEventMouseButton and event.pressed:
 		match event.button_index:
 			MOUSE_BUTTON_WHEEL_UP:
@@ -208,8 +217,9 @@ func _update_hud() -> void:
 		lines.append(rules)
 	lines.append("")
 	lines.append("P1: ← → поворот · ↑ тяга · Space пулемёт · Ctrl ракетница")
-	lines.append("P2: A D поворот · W тяга · Q пулемёт · E ракетница")
-	lines.append("F1 коллизия · колесо зум · ESC выход")
+	if _ships.size() > 1:
+		lines.append("P2: A D поворот · W тяга · Q пулемёт · E ракетница")
+	lines.append("F1 коллизия · колесо зум · ESC меню")
 	if _match.is_match_over():
 		lines.append(">>> P%d ПОБЕДИЛ (%d килов) — R для рестарта матча <<<" % [
 			_ships.find(_match.winner()) + 1, _match.get_score(_match.winner())])
