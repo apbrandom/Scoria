@@ -52,6 +52,18 @@ signal carved(area: Rect2i)
 ## Пересобирать сразу в carve, не откладывая на кадр (используется бенчмарком).
 @export var immediate_rebuild: bool = false
 
+@export_group("Форма воронки")
+## 0 — идеальный круг. Больше — радиус воронки гуляет по углу (органический,
+## "осыпавшийся" край вместо циркуля). Заказчик одобрил трогать форму воронки
+## явно (notes/terrain_research.md, ночь 2026-07-22 -> 2026-07-23) — раньше это
+## было решение только заказчика, теперь применяем напрямую.
+@export_range(0.0, 0.5, 0.01) var edge_noise_amplitude: float = 0.18
+## "Частота" шума по кругу — сколько примерно лепестков/бугров укладывается
+## на полную окружность. Меньше 1 — почти незаметно, больше 6-8 — мелкая рябь
+## вместо крупных неровностей. Подобрано на глаз через
+## tools/terrain_playground.gd --autocarve --shots=.
+@export_range(0.5, 8.0, 0.1) var edge_noise_frequency: float = 3.0
+
 ## Физический слой декоративных обломков (см. scenes/fx/terrain_debris.gd) —
 ## отдельный от геймплейного слоя по умолчанию (корабль/снаряды/рельеф сидят на
 ## слое 1, project.godot [layer_names]). У обломков collision_mask=0 (ни с чем
@@ -117,6 +129,13 @@ var _pending_debris: Array = []
 ## отложенности до _process, что и у _pending_debris (add_child внутри флаша
 ## физ-запросов запрещён движком). Array мест: {"at": Vector2, "color": Color}.
 var _pending_dust: Array = []
+
+## Шум формы воронки — фиксированный seed (не Godot-рандом): угол одинаково
+## "рвёт" край каждый раз для одного и того же center, иначе будущий сетевой
+## replay carve (roadmap.md: "детерминированный replay") разошёлся бы между
+## хостом и клиентом. Ленивая инициализация — сцены без единого carve (главное
+## меню, чистые юнит-тесты) не платят за FastNoiseLite впустую.
+var _edge_noise: FastNoiseLite = null
 
 # --- телеметрия, микросекунды; сбрасывается stats_reset() ---
 var stat_solid_image_usec := 0
@@ -267,8 +286,51 @@ func is_solid_at(p: Vector2i) -> bool:
 
 # ---------------------------------------------------------------- разрушение
 
-## Выбивает круг. Возвращает число реально изменённых пикселей.
-## Радиус масштабируется по классу материала (SOFT рвётся шире, INDESTRUCTIBLE не рвётся).
+## Ленивая инициализация детерминированного шума края воронки (см. _edge_noise).
+## seed фиксирован константой, а не Godot-рандомом — тот же center должен давать
+## тот же неровный край каждый раз (важно для будущего сетевого replay carve).
+func _get_edge_noise() -> FastNoiseLite:
+	if _edge_noise == null:
+		_edge_noise = FastNoiseLite.new()
+		_edge_noise.seed = 20260722
+		_edge_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX
+	return _edge_noise
+
+
+## EDGE_SAMPLES — таблица множителей радиуса по углу, строится один раз на
+## carve_circle (не на пиксель — get_noise_2d дороже одного индексирования
+## массива, а пикселей в воронке до ~30k). 64 — достаточно гладко для амплитуды
+## и частоты в разумных пределах (@export выше), крупнее не давало заметной
+## разницы на глаз через --autocarve --shots=.
+const EDGE_SAMPLES := 64
+
+
+## Таблица edge_mult[i] = множитель радиуса на угле TAU*i/EDGE_SAMPLES.
+## Шум сэмплится вдоль окружности в noise-пространстве (cos/sin * frequency) —
+## стандартный приём для гладкого "оборачивающегося" 1D-сигнала по кругу без
+## разрыва на стыке 0/TAU. center подмешан (сильно уменьшенный), чтобы разные
+## воронки на уровне не были одним и тем же узором, повёрнутым/сдвинутым.
+func _build_edge_mult_table(center: Vector2i) -> PackedFloat32Array:
+	var table := PackedFloat32Array()
+	table.resize(EDGE_SAMPLES)
+	if edge_noise_amplitude <= 0.0:
+		table.fill(1.0)
+		return table
+	var noise := _get_edge_noise()
+	var cox := center.x * 0.013
+	var coy := center.y * 0.013
+	for i in EDGE_SAMPLES:
+		var a := TAU * i / EDGE_SAMPLES
+		var nx := cos(a) * edge_noise_frequency + cox
+		var ny := sin(a) * edge_noise_frequency + coy
+		var n := noise.get_noise_2d(nx, ny)  # -1..1
+		table[i] = 1.0 + n * edge_noise_amplitude
+	return table
+
+
+## Выбивает круг (с органическим шумным краем, см. edge_noise_*). Возвращает
+## число реально изменённых пикселей. Радиус масштабируется по классу материала
+## (SOFT рвётся шире, INDESTRUCTIBLE не рвётся) и по углу (см. _build_edge_mult_table).
 func carve_circle(center: Vector2i, radius: int) -> int:
 	var carvable := TerrainPalette.CARVABLE
 	var carve_scale := TerrainPalette.CARVE_SCALE
@@ -281,13 +343,19 @@ func carve_circle(center: Vector2i, radius: int) -> int:
 	var max_scale := 0.0
 	for s in carve_scale:
 		max_scale = maxf(max_scale, s)
-	var r_max := int(ceil(radius * max_scale))
+	# +edge_noise_amplitude — на самых "выпуклых" углах реальный радиус может
+	# превысить номинал max_scale, иначе бокс сканирования обрежет пиксели,
+	# которые шум должен был вырезать, без ошибки (тот же класс бага, что и
+	# комментарий про max_scale чуть выше).
+	var r_max := int(ceil(radius * max_scale * (1.0 + edge_noise_amplitude)))
 	var x0 := maxi(center.x - r_max, 0)
 	var x1 := mini(center.x + r_max, size.x - 1)
 	var y0 := maxi(center.y - r_max, 0)
 	var y1 := mini(center.y + r_max, size.y - 1)
 	if x1 < x0 or y1 < y0:
 		return 0
+
+	var edge_mult := _build_edge_mult_table(center)
 
 	var changed := 0
 	var cx0 := x0 / chunk_size
@@ -330,7 +398,11 @@ func carve_circle(center: Vector2i, radius: int) -> int:
 					var c := _class[gi]
 					if carvable[c] == 0:
 						continue
-					var rr := radius * carve_scale[c]
+					# Угол через atan2(dy,dx) — тот же атан, что и везде в проекте
+					# (Ship.aim_angle и т.п.), не отдельное соглашение по знакам.
+					var angle := atan2(dy, dx)
+					var idx := int(fposmod(angle, TAU) / TAU * EDGE_SAMPLES) % EDGE_SAMPLES
+					var rr := radius * carve_scale[c] * edge_mult[idx]
 					if d2 > rr * rr:
 						continue
 					_class[gi] = TerrainPalette.Cls.EMPTY
