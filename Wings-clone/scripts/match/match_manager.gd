@@ -27,9 +27,13 @@ extends Node
 ## (notes/roadmap.md — отдельная задача), просто прагматичный минимум.
 @export var min_spawn_separation: float = 200.0
 
-const SPAWN_CLEAR_RADIUS := 48
-const SPAWN_MARGIN := 60
-const SPAWN_SEPARATION_ATTEMPTS := 8
+## Радиус, который должен быть чист при спавне (см. Terrain.find_clear_spawn).
+@export var spawn_clear_radius: int = 48
+## Отступ от края уровня при поиске точки спавна.
+@export var spawn_margin: int = 60
+## Сколько раз перебрать точку спавна, пытаясь разнести корабли дальше
+## min_spawn_separation, прежде чем смириться с ближайшей найденной.
+@export var spawn_separation_attempts: int = 8
 
 ## Выставляется вызывающим (Level) до pick_spawns()/setup().
 var terrain: Terrain
@@ -88,7 +92,7 @@ func restart_match() -> void:
 func _pick_spawn_away_from(avoid: Array[Vector2]) -> Vector2:
 	var best := _pick_spawn_raw()
 	var attempts := 0
-	while attempts < SPAWN_SEPARATION_ATTEMPTS and _too_close(best, avoid):
+	while attempts < spawn_separation_attempts and _too_close(best, avoid):
 		best = _pick_spawn_raw()
 		attempts += 1
 	return best
@@ -97,11 +101,11 @@ func _pick_spawn_away_from(avoid: Array[Vector2]) -> Vector2:
 ## Terrain.find_clear_spawn() сам ничего не знает про "второй корабль" —
 ## разнесение целиком забота вызывающего (см. terrain.gd:557 doc-comment).
 func _pick_spawn_raw() -> Vector2:
-	var p := terrain.find_clear_spawn(SPAWN_CLEAR_RADIUS, SPAWN_MARGIN)
+	var p := terrain.find_clear_spawn(spawn_clear_radius, spawn_margin)
 	if p == Vector2i(-1, -1):
 		push_warning("Не нашлось чистого места для спавна — беру центр уровня")
 		p = terrain.size / 2
-		terrain.carve_circle(p, SPAWN_CLEAR_RADIUS)
+		terrain.carve_circle(p, spawn_clear_radius)
 		terrain.flush_dirty()
 	return Vector2(p)
 

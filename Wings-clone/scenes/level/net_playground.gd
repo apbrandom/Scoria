@@ -79,8 +79,8 @@ func _ready() -> void:
 			forced_join_addr = arg.substr("--join=".length())
 
 	var palette := load(PALETTE_PATH) as TerrainPalette
-	var vis := _load_image(VISUAL_PATH)
-	var msk := _load_image(MASK_PATH)
+	var vis := LevelImageLoader.load_image(VISUAL_PATH)
+	var msk := LevelImageLoader.load_image(MASK_PATH)
 	if vis == null:
 		var lvl := TestLevelGen.generate(FALLBACK_SIZE, FALLBACK_SEED, palette)
 		vis = lvl["visual"]
@@ -166,15 +166,6 @@ func _set_status(text: String) -> void:
 	print("[%s] %s" % ["ХОСТ" if _is_host else "КЛИЕНТ", text])
 
 
-func _load_image(path: String) -> Image:
-	if not ResourceLoader.exists(path):
-		return null
-	var res := load(path)
-	if res is Image:
-		return res
-	if res is Texture2D:
-		return (res as Texture2D).get_image()
-	return null
 
 
 ## На хосте — сигнал приходит, когда клиент реально подключился (id клиента уже

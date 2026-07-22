@@ -24,6 +24,11 @@ extends Node2D
 const TerrainDebrisScript := preload("res://scenes/fx/terrain_debris.gd")
 const TerrainDustScript := preload("res://scenes/fx/terrain_dust.gd")
 
+## Пока без подписчиков в коде — заранее заведённый семантический шов для
+## будущей сетевой репликации carve по reliable_ordered @rpc (roadmap.md:
+## «Carve рельефа по @rpc + локальный детерминированный replay»): у хоста
+## этот сигнал станет источником события "что разослать", а не поводом для
+## нового способа узнавать о разрушении.
 signal carved(area: Rect2i)
 
 @export var palette: TerrainPalette
@@ -267,8 +272,16 @@ func is_solid_at(p: Vector2i) -> bool:
 func carve_circle(center: Vector2i, radius: int) -> int:
 	var carvable := TerrainPalette.CARVABLE
 	var carve_scale := TerrainPalette.CARVE_SCALE
-	# максимальный радиус с учётом самого «мягкого» материала
-	var r_max := int(ceil(radius * 1.6))
+	# максимальный радиус с учётом самого «мягкого» материала — считаем от
+	# ЖИВОГО максимума CARVE_SCALE (PackedFloat32Array не даёт .max() в 4.7,
+	# отсюда ручной цикл), а не от захардкоженного 1.6: тот был буквальным
+	# слепком текущего SOFT (resources/terrain_palette.gd) и молча перестал
+	# бы совпадать, подними кто-то в будущем множитель материала выше —
+	# carve тогда обрезал бы бокс сканирования и терял пиксели без ошибки.
+	var max_scale := 0.0
+	for s in carve_scale:
+		max_scale = maxf(max_scale, s)
+	var r_max := int(ceil(radius * max_scale))
 	var x0 := maxi(center.x - r_max, 0)
 	var x1 := mini(center.x + r_max, size.x - 1)
 	var y0 := maxi(center.y - r_max, 0)

@@ -51,8 +51,8 @@ func _ready() -> void:
 		push_error("Не загрузилась палитра " + PALETTE_PATH)
 		return
 
-	var vis := _load_image(VISUAL_PATH)
-	var msk := _load_image(MASK_PATH)
+	var vis := LevelImageLoader.load_image(VISUAL_PATH)
+	var msk := LevelImageLoader.load_image(MASK_PATH)
 	if vis == null:
 		var lvl := TestLevelGen.generate(FALLBACK_SIZE, FALLBACK_SEED, _palette)
 		vis = lvl["visual"]
@@ -97,20 +97,6 @@ func _ready() -> void:
 				_auto_shot_dir = a.substr(8)
 		print("=== АВТОТЕСТ: %d взрывов, драйвер %s ===" % [
 			_auto_left, DisplayServer.get_name()])
-
-
-func _load_image(path: String) -> Image:
-	if not ResourceLoader.exists(path):
-		return null
-	var res := load(path)
-	if res is Image:
-		return res
-	if res is Texture2D:
-		# Импорт как Texture2D портит данные (fix_alpha_border меняет RGB у
-		# прозрачных пикселей), для маски это фатально. Работаем, но предупреждаем.
-		push_warning("%s импортирован как Texture2D, а не Image — цвета могут быть искажены" % path)
-		return (res as Texture2D).get_image()
-	return null
 
 
 func _process(delta: float) -> void:
@@ -236,8 +222,8 @@ func _zoom_at(factor: float) -> void:
 
 
 func _reload() -> void:
-	var vis := _load_image(VISUAL_PATH)
-	var msk := _load_image(MASK_PATH)
+	var vis := LevelImageLoader.load_image(VISUAL_PATH)
+	var msk := LevelImageLoader.load_image(MASK_PATH)
 	if vis == null:
 		var lvl := TestLevelGen.generate(FALLBACK_SIZE, FALLBACK_SEED, _palette)
 		vis = lvl["visual"]
@@ -258,7 +244,7 @@ func _update_hud() -> void:
 		"carve      %6.2f мс  (%d пикс.)" % [_last_carve_ms, _last_carve_px],
 		"пересборка %6.2f мс  чанков за кадр: %d,  в очереди: %d" % [
 			_frame_rebuild_ms, _frame_rebuilt, _terrain.dirty_count()],
-		"отрезков коллизии: %d" % _terrain.total_segments(),
+		"отрезков коллизии: %d   чанков: %d" % [_terrain.total_segments(), _terrain.chunk_count],
 		"",
 		"под курсором: %s  %s" % [str(m), TerrainPalette.class_title(cls)],
 		"",

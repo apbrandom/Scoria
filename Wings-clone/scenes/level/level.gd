@@ -71,8 +71,8 @@ func _ready() -> void:
 		push_error("Не загрузилась палитра " + PALETTE_PATH)
 		return
 
-	var vis := _load_image(VISUAL_PATH)
-	var msk := _load_image(MASK_PATH)
+	var vis := LevelImageLoader.load_image(VISUAL_PATH)
+	var msk := LevelImageLoader.load_image(MASK_PATH)
 	if vis == null:
 		var lvl := TestLevelGen.generate(FALLBACK_SIZE, FALLBACK_SEED, _palette)
 		vis = lvl["visual"]
@@ -130,18 +130,6 @@ func _ready() -> void:
 	_hud.add_theme_color_override("font_outline_color", Color.BLACK)
 	_hud.add_theme_constant_override("outline_size", 5)
 	layer.add_child(_hud)
-
-
-func _load_image(path: String) -> Image:
-	if not ResourceLoader.exists(path):
-		return null
-	var res := load(path)
-	if res is Image:
-		return res
-	if res is Texture2D:
-		push_warning("%s импортирован как Texture2D, а не Image — цвета маски могут быть искажены" % path)
-		return (res as Texture2D).get_image()
-	return null
 
 
 func _process(_delta: float) -> void:
