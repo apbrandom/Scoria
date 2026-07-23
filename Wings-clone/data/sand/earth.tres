@@ -1,0 +1,13 @@
+[gd_resource type="Resource" script_class="SandMaterial" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://resources/sand_material.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = 4
+mat_name = "Земля"
+kind = 2
+color = Color(0.5, 0.35, 0.2, 1)
+density = 2.0
+flammable = false
+burn_life = 0

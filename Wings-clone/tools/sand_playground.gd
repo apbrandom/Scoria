@@ -1,7 +1,7 @@
 ## Визуальная песочница клеточной симуляции (SandSim). Нажать Play и сыпать песок.
 ##
 ## ЛКМ (зажать) — рисовать текущим материалом,  колесо — размер кисти
-## 1 — песок,  2 — камень,  3 — ластик (пусто)
+## 1 песок · 2 камень · 3 вода · 4 земля · 5 дерево · 6 огонь · 0 ластик
 ## F2 — очистить (пол заново),  ESC — выход
 ##
 ## Логика симуляции — в scripts/sand/sand_sim.gd (проверена headless в
@@ -21,6 +21,11 @@ const M_SAND := preload("res://data/sand/sand.tres")
 const M_STONE := preload("res://data/sand/stone.tres")
 const HUD_LABEL_SCRIPT := preload("res://scripts/level/hud_label.gd")
 
+const M_WATER := preload("res://data/sand/water.tres")
+const M_EARTH := preload("res://data/sand/earth.tres")
+const M_WOOD := preload("res://data/sand/wood.tres")
+const M_FIRE := preload("res://data/sand/fire.tres")
+
 const GRID_W := 220
 const GRID_H := 140
 const SCALE := 5           # экранных пикселей на клетку
@@ -28,6 +33,10 @@ const FLOOR_H := 6         # толщина каменного пола сниз
 const EMPTY_ID := 0
 const SAND_ID := 1
 const STONE_ID := 2
+const WATER_ID := 3
+const EARTH_ID := 4
+const WOOD_ID := 5
+const FIRE_ID := 6
 
 var _sim: Object
 var _sprite: Sprite2D
@@ -42,7 +51,7 @@ func _ready() -> void:
 	_render = DisplayServer.get_name() != "headless"
 
 	_sim = SAND_SIM.new()
-	_sim.setup(GRID_W, GRID_H, [M_EMPTY, M_SAND, M_STONE])
+	_sim.setup(GRID_W, GRID_H, [M_EMPTY, M_SAND, M_STONE, M_WATER, M_EARTH, M_WOOD, M_FIRE])
 	_reset_floor()
 
 	if _render:
@@ -62,7 +71,7 @@ func _ready() -> void:
 
 ## Каменное дно + чистое поле над ним.
 func _reset_floor() -> void:
-	_sim.setup(GRID_W, GRID_H, [M_EMPTY, M_SAND, M_STONE])
+	_sim.setup(GRID_W, GRID_H, [M_EMPTY, M_SAND, M_STONE, M_WATER, M_EARTH, M_WOOD, M_FIRE])
 	_sim.fill_rect(0, GRID_H - FLOOR_H, GRID_W, FLOOR_H, STONE_ID)
 
 
@@ -121,6 +130,14 @@ func _unhandled_input(event: InputEvent) -> void:
 			KEY_2:
 				_brush_id = STONE_ID
 			KEY_3:
+				_brush_id = WATER_ID
+			KEY_4:
+				_brush_id = EARTH_ID
+			KEY_5:
+				_brush_id = WOOD_ID
+			KEY_6:
+				_brush_id = FIRE_ID
+			KEY_0:
 				_brush_id = EMPTY_ID
 			KEY_F2:
 				_reset_floor()
@@ -132,6 +149,10 @@ func _brush_title() -> String:
 	match _brush_id:
 		SAND_ID: return "песок"
 		STONE_ID: return "камень"
+		WATER_ID: return "вода"
+		EARTH_ID: return "земля"
+		WOOD_ID: return "дерево"
+		FIRE_ID: return "огонь"
 		_: return "ластик"
 
 
@@ -140,7 +161,7 @@ func _update_hud() -> void:
 	_hud.text = "\n".join([
 		"FPS %d      поле %dx%d,  тик %d" % [
 			Engine.get_frames_per_second(), GRID_W, GRID_H, _sim.tick],
-		"кисть: %s  (1 песок · 2 камень · 3 ластик),  радиус %d (колесо)" % [
+		"кисть: %s  (1 песок·2 камень·3 вода·4 земля·5 дерево·6 огонь·0 ластик),  радиус %d" % [
 			_brush_title(), _brush_r],
 		"песка на поле: %d" % _sim.count_material(SAND_ID),
 		"активно (idle=покой): %s   грязный прямоугольник %dx%d" % [

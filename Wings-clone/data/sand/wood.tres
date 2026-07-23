@@ -1,0 +1,13 @@
+[gd_resource type="Resource" script_class="SandMaterial" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://resources/sand_material.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = 5
+mat_name = "Дерево"
+kind = 1
+color = Color(0.45, 0.28, 0.13, 1)
+density = 4.0
+flammable = true
+burn_life = 80
