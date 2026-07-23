@@ -61,6 +61,17 @@ var force_full_scan := false
 var _cells: PackedByteArray
 var _aux: PackedByteArray          # состояние ячейки (жизнь огня); 0 у прочих
 var _moved_at: PackedInt32Array    # номер тика, когда ячейку последний раз двигали
+## Точное число клеток LIQUID в каждой колонке (индекс — x). Поддерживается
+## ИНКРЕМЕНТАЛЬНО в _set_cell_raw — единственном месте, где меняется _cells —
+## чтобы горизонтальное правило жидкости сравнивало РЕАЛЬНУЮ высоту столба воды
+## в соседней колонке за O(1), а не эвристику по 1 соседней клетке (та не
+## дотягивала до полного выравнивания на большом объёме — см. devlog §35/§36).
+## Безопасно для dirty-rect: сравнение всегда с колонкой x±1 (в пределах уже
+## установленной границы скана +1), а само значение обновляется СИНХРОННО с
+## _cells в обоих режимах (opt/полный) одним и тем же кодом — в отличие от
+## отброшенной идеи "заглянуть на N клеток вверх" (та СЛОМАЛА бы этот же
+## инвариант, потому что читала бы состояние, ещё не обновлённое в опт-режиме).
+var _liquid_col_count: PackedInt32Array
 
 ## Быстрые таблицы id -> свойство (чтобы в цикле не разыменовывать Resource).
 var _kind_of: PackedByteArray
@@ -70,6 +81,7 @@ var _burnlife_of: PackedInt32Array
 var _viscosity_of: PackedFloat32Array
 var _inertia_of: PackedFloat32Array
 var _falls_of: PackedByteArray
+var _ignite_chance_of: PackedFloat32Array
 var _color_of: Array = []
 ## id материала с kind==FIRE (во что превращается горючее и что ставит кисть
 ## огня). -1, если в наборе огня нет — тогда логика огня не работает.
@@ -98,6 +110,8 @@ func setup(w: int, h: int, materials: Array) -> void:
 	_moved_at = PackedInt32Array()
 	_moved_at.resize(w * h)
 	_moved_at.fill(-1)            # никого не двигали (tick стартует с 0)
+	_liquid_col_count = PackedInt32Array()
+	_liquid_col_count.resize(w)   # нулями — колонок с жидкостью пока нет
 
 	var max_id := 0
 	for m in materials:
@@ -109,6 +123,7 @@ func setup(w: int, h: int, materials: Array) -> void:
 	_viscosity_of = PackedFloat32Array(); _viscosity_of.resize(max_id + 1)
 	_inertia_of = PackedFloat32Array();   _inertia_of.resize(max_id + 1)
 	_falls_of = PackedByteArray();        _falls_of.resize(max_id + 1)
+	_ignite_chance_of = PackedFloat32Array(); _ignite_chance_of.resize(max_id + 1)
 	_color_of = []; _color_of.resize(max_id + 1)
 	for i in _color_of.size():
 		_color_of[i] = Color(0, 0, 0, 0)
@@ -122,6 +137,7 @@ func setup(w: int, h: int, materials: Array) -> void:
 		_viscosity_of[m.id] = m.viscosity
 		_inertia_of[m.id] = m.inertia
 		_falls_of[m.id] = 1 if m.falls else 0
+		_ignite_chance_of[m.id] = m.ignite_chance
 		_color_of[m.id] = m.color
 		if m.kind == KIND_FIRE:
 			_fire_id = m.id
@@ -148,9 +164,24 @@ func set_cell(x: int, y: int, id: int) -> void:
 	if not in_bounds(x, y):
 		return
 	var i := y * width + x
-	_cells[i] = id
+	_set_cell_raw(i, id)
 	_aux[i] = 0
 	_mark_dirty(x, y)
+
+
+## ЕДИНСТВЕННОЕ место, где меняется _cells[i] — держит _liquid_col_count
+## синхронно с реальным содержимым поля. Все остальные функции файла обязаны
+## менять материал ячейки только через эту функцию (см. комментарий у
+## _liquid_col_count выше — почему это должно быть централизовано).
+func _set_cell_raw(i: int, new_id: int) -> void:
+	var old_id := _cells[i]
+	if old_id == new_id:
+		return
+	if _kind_of[old_id] == KIND_LIQUID:
+		_liquid_col_count[i % width] -= 1
+	if _kind_of[new_id] == KIND_LIQUID:
+		_liquid_col_count[i % width] += 1
+	_cells[i] = new_id
 
 
 func fill_rect(x: int, y: int, w: int, h: int, id: int) -> void:
@@ -257,28 +288,35 @@ func _step_powder(x: int, y: int, id: int) -> void:
 		_move_to_empty(x, y, x - first_dx, below, id)
 
 
-## Жидкость: вниз; по диагонали вниз; иначе горизонтально — ДВА правила, и
-## важно, что они не одно и то же (история версий, обе прошлые попытки были
-## наполовину неверны — см. devlog):
+## Жидкость: вниз; по диагонали вниз; иначе горизонтально — В СТОРОНУ КОЛОНКИ
+## С МЕНЬШИМ ЗАПАСОМ ЖИДКОСТИ (`_liquid_col_count`, точный счётчик, не
+## эвристика по соседней клетке). Двигаемся в пустого соседа по ряду, ТОЛЬКО
+## если в моей колонке СТРОГО больше жидкости, чем в его — иначе не двигаемся
+## вовсе. Это заменяет две прежние (обе наполовину неверные) версии разом:
 ##
-## Правило А (эрозия горки) — если НАД текущей ячейкой есть жидкость (её
-## придавило сверху) И сосед в этом же ряду пуст И этот сосед НЕ настолько же
-## высок (у него самого нет жидкости строго над ним на этой же высоте) —
-## двигаемся туда. Условие "сосед не так же высок" обязательно: без него
-## одиночная капля с пустыми соседями с обеих сторон дёргалась бы туда-сюда
-## каждый тик без причины (реальный баг, найден тестом: `is_active()` не
-## гаснет вообще, `tools/_scratch_water_jitter` — идеально ровный пинг-понг
-## клетка/сосед). С условием — движение только когда это РЕАЛЬНО выравнивает.
+## v1 "течь только к обрыву" (нужна пустая клетка НИЖЕ соседа) — не давало
+## растекаться шире исходного пятна на плоском дне (вода вела себя как песок).
+## v2 "давление сверху + сосед не так же высок, окно 1 клетка" — чинило v1, но
+## сравнение вслепую по 1 клетке слишком локально: большой объём оседал в
+## пологий СКЛОН, а не плоскость (заказчик подтвердил на скриншоте — вода
+## всё ещё "не растекается до конца"). Пробовал расширить окно до 48 клеток —
+## СЛОМАЛО инвариант dirty-rect==полный проход (чтение состояния за пределами
+## гарантированно свежей границы скана — та же природа, что каскадный баг).
 ##
-## Правило Б (течь к обрыву) — если правило А не подошло (ячейка одна, слоем
-## в одну клетку, "прижимать" нечем), ищем в пределах LIQUID_DISPERSION клеток
-## вбок ближайшую ячейку, под которой по-настоящему пусто (обрыв) — и ТОЛЬКО
-## туда. Без правила Б большой ровный слой на плоском дне не растекался бы
-## шире исходного пятна (первая версия этой функции наступала ровно на эту
-## грабли — вода вела себя как сыпучее, не как жидкость).
+## Точное сравнение через `_liquid_col_count` безопасно для dirty-rect ИМЕННО
+## потому, что это не чтение чужой клетки "с запасом", а инкрементально
+## поддерживаемый кэш (обновляется в _set_cell_raw синхронно с _cells), и
+## сравнение всегда с колонкой ±1 — той же границей, что уже безопасна для
+## всех остальных решений в этом файле.
 ##
-## Если ни А, ни Б не нашли цель — движения нет, функция возвращается, НЕ
-## помечая ячейку грязной: это и есть настоящий, а не мнимый покой.
+## Порог "минимум на 2 больше", НЕ "хоть на сколько-то больше". С порогом в 1
+## пара колонок (3,0) сходится к (2,1) и правильно останавливается — но если
+## остаток неразрешим поровну (например, (2,1) от нечётной массы на 2 колонки),
+## строгое "больше" гоняло бы ход туда-обратно НАВСЕГДА: после хода (2,1)→(1,2)
+## правило видит уже НОВУЮ большую колонку и гонит назад — реальный бесконечный
+## пинг-понг, пойманный тестом. Порог 2 принимает разницу в 1 как "уже
+## выровнено, дальше не долбим" — соседние колонки могут отличаться на 1
+## (неизбежно при нечётной массе), это разрешённый финальный покой, не баг.
 ##
 ## Вязкость/инертность (SandMaterial.viscosity/inertia): вязкость проверяется
 ## ТОЛЬКО когда ход уже найден (иначе честно осевшая лужа никогда бы не
@@ -286,8 +324,6 @@ func _step_powder(x: int, y: int, id: int) -> void:
 ## ячейки (1=влево,2=вправо,0=нет памяти) и переносится вместе с частицей при
 ## любом перемещении; инертность предпочитает повторить его, а не выбирать
 ## заново по хешу, давая цельный поток, а не дрожь.
-const LIQUID_DISPERSION := 24
-
 func _step_liquid(x: int, y: int, id: int) -> void:
 	var i := y * width + x
 	var prev_dir: int = _aux[i]
@@ -308,21 +344,10 @@ func _step_liquid(x: int, y: int, id: int) -> void:
 			tx = x + d; ty = below; new_dir = _encode_dir(d); found = true
 		elif below < height and _is_empty(x - d, below):
 			tx = x - d; ty = below; new_dir = _encode_dir(-d); found = true
-		elif _cell_kind(x, y - 1) == KIND_LIQUID and _is_empty(x + d, y) and not _column_stacked_above(x + d, y):
+		elif _is_empty(x + d, y) and _liquid_col_count[x] - _liquid_col_count[x + d] >= 2:
 			tx = x + d; ty = y; new_dir = _encode_dir(d); found = true
-		elif _cell_kind(x, y - 1) == KIND_LIQUID and _is_empty(x - d, y) and not _column_stacked_above(x - d, y):
+		elif _is_empty(x - d, y) and _liquid_col_count[x] - _liquid_col_count[x - d] >= 2:
 			tx = x - d; ty = y; new_dir = _encode_dir(-d); found = true
-		else:
-			var ld := _dist_to_drop(x, y, -1)
-			var rd := _dist_to_drop(x, y, 1)
-			if ld > 0 or rd > 0:
-				var dir := 0
-				if ld > 0 and (rd == 0 or ld < rd or (ld == rd and d < 0)):
-					dir = -1
-				elif rd > 0:
-					dir = 1
-				if dir != 0:
-					tx = x + dir; ty = y; new_dir = _encode_dir(dir); found = true
 
 	if not found:
 		return  # действительно некуда течь — покой, не помечаем грязным
@@ -333,35 +358,6 @@ func _step_liquid(x: int, y: int, id: int) -> void:
 
 	_move_to_empty(x, y, tx, ty, id)
 	_aux[ty * width + tx] = new_dir
-
-
-## "Сосед не так же высок" — проверка РОВНО на 1 клетку вверх, НЕ больше.
-## Пробовал расширить до окна в несколько клеток (даёт заметно более плоский
-## результат на большом объёме) — но это СЛОМАЛО инвариант dirty-rect==полный
-## проход: скан гарантированно свежий только в границах грязного
-## прямоугольника +1 клетка (та же причина, что чинил баг с вертикальным
-## каскадом), а чтение на 48 клеток вверх иногда заглядывает ЗА эту границу —
-## там состояние может быть с предыдущего тика в оптимизированном проходе, но
-## уже обновлено в полном скане, то есть РЕАЛЬНОЕ расхождение поведения, не
-## только производительности (тест поймал: разошлись на тике 14). Настоящее
-## точное сравнение высот колонок потребовало бы отдельного инкрементально
-## поддерживаемого кэша высоты на колонку (не просто чтения соседних клеток) —
-## отдельная задача, не быстрая правка; сейчас — честная граница в 1 клетку,
-## запас на будущее записан в notes/terrain_research.md.
-func _column_stacked_above(x: int, y: int) -> bool:
-	return _cell_kind(x, y - 1) == KIND_LIQUID
-
-
-## Расстояние вбок (в направлении dir) до ближайшего «обрыва» — пустой клетки
-## в этом же ряду, под которой тоже пусто. 0, если путь перекрыт или обрыва нет.
-func _dist_to_drop(x: int, y: int, dir: int) -> int:
-	for step in range(1, LIQUID_DISPERSION + 1):
-		var nx := x + dir * step
-		if not _is_empty(nx, y):
-			return 0
-		if y + 1 < height and _is_empty(nx, y + 1):
-			return step
-	return 0
 
 
 func _choose_dir(x: int, y: int, prev_dir: int, id: int) -> int:
@@ -388,7 +384,7 @@ func _chance(x: int, y: int, t: int, salt: int) -> float:
 ## жизни в _aux, после чего исчезает. Пока горит — сам себя держит активным.
 func _step_fire(x: int, y: int, i: int, id: int) -> void:
 	if _has_neighbor_kind(x, y, KIND_LIQUID):
-		_cells[i] = EMPTY_ID
+		_set_cell_raw(i, EMPTY_ID)
 		_aux[i] = 0
 		_mark_dirty(x, y)
 		return
@@ -404,14 +400,18 @@ func _step_fire(x: int, y: int, i: int, id: int) -> void:
 		life = _burnlife_of[id]  # свежий огонь (кистью) — взять базовую жизнь
 	life -= 1
 	if life <= 0:
-		_cells[i] = EMPTY_ID
+		_set_cell_raw(i, EMPTY_ID)
 		_aux[i] = 0
 	else:
 		_aux[i] = life
 	_mark_dirty(x, y)  # огонь активен, пока не выгорел (само-пометка)
 
 
-## Поджечь клетку, если она горючая (детерминированный шанс за тик).
+## Поджечь клетку, если она горючая. Шанс за тик — SandMaterial.ignite_chance
+## материала FIRE (не горючего!) — управляет СКОРОСТЬЮ распространения по
+## связной горючей массе отдельно от burn_life (сколько горит уже занявшаяся
+## клетка). Меньше ignite_chance — огонь ползёт по дереву заметно дольше,
+## а не занимает всю связную массу почти мгновенно.
 func _ignite(x: int, y: int) -> void:
 	if not in_bounds(x, y):
 		return
@@ -419,9 +419,9 @@ func _ignite(x: int, y: int) -> void:
 	var nid := _cells[j]
 	if nid == EMPTY_ID or _flammable_of[nid] == 0:
 		return
-	if (_hash3(x, y, tick) & 1) != 0:
+	if _chance(x, y, tick, 4) >= _ignite_chance_of[_fire_id]:
 		return  # в этот тик не занялось — займётся в следующий
-	_cells[j] = _fire_id
+	_set_cell_raw(j, _fire_id)
 	_aux[j] = _burnlife_of[nid]  # горит столько, сколько задано горючему материалу
 	_moved_at[j] = tick          # только что создан — не обрабатывать в этот тик
 	_mark_dirty(x, y)
@@ -520,12 +520,12 @@ func _try_drop_group(group: Array, id: int) -> void:
 	for p in group:
 		var pp: Vector2i = p
 		var i: int = pp.y * width + pp.x
-		_cells[i] = EMPTY_ID
+		_set_cell_raw(i, EMPTY_ID)
 		_aux[i] = 0
 	for p in group:
 		var pp: Vector2i = p
 		var ni: int = (pp.y + 1) * width + pp.x
-		_cells[ni] = id
+		_set_cell_raw(ni, id)
 		_moved_at[ni] = tick
 	for p in group:
 		var pp: Vector2i = p
@@ -564,8 +564,9 @@ func _cell_kind(x: int, y: int) -> int:
 ## Переместить материал в ПУСТУЮ клетку.
 func _move_to_empty(fx: int, fy: int, tx: int, ty: int, id: int) -> void:
 	var to_i := ty * width + tx
-	_cells[to_i] = id
-	_cells[fy * width + fx] = EMPTY_ID
+	var from_i := fy * width + fx
+	_set_cell_raw(to_i, id)
+	_set_cell_raw(from_i, EMPTY_ID)
 	_moved_at[to_i] = tick
 	_mark_dirty(fx, fy)
 	_mark_dirty(tx, ty)
@@ -576,8 +577,9 @@ func _swap_cells(fx: int, fy: int, tx: int, ty: int) -> void:
 	var from_i := fy * width + fx
 	var to_i := ty * width + tx
 	var a := _cells[from_i]
-	_cells[from_i] = _cells[to_i]
-	_cells[to_i] = a
+	var b := _cells[to_i]
+	_set_cell_raw(from_i, b)
+	_set_cell_raw(to_i, a)
 	_moved_at[from_i] = tick
 	_moved_at[to_i] = tick
 	_mark_dirty(fx, fy)

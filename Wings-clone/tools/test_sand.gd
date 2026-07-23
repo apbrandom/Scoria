@@ -61,6 +61,7 @@ func _ready() -> void:
 	_test_wood_fall_blocked_by_obstacle()
 	_test_falling_wood_determinism()
 	_test_wood_fall_dirty_rect_matches_full()
+	_test_large_water_volume_settles_without_jitter()
 	print("\n=== ИТОГ: %d пройдено, %d провалено ===" % [_pass, _fail])
 	get_tree().quit(1 if _fail > 0 else 0)
 
@@ -570,3 +571,24 @@ func _test_wood_fall_dirty_rect_matches_full() -> void:
 			break
 	_check("dirty-rect == полный проход при падении дерева", diverged_at == -1,
 		"разошлись на тике %d" % diverged_at)
+
+
+# Регрессия на реальный найденный баг: большой объём воды в широком контейнере
+# раньше либо замирал клином (гейт "давление сверху"), либо вечно дребезжал
+# (классическое правило без порога) — is_active() никогда не гас. Порог
+# "разница >= 2" в _step_liquid должен гарантировать оседание за разумное
+# число тиков независимо от объёма.
+func _test_large_water_volume_settles_without_jitter() -> void:
+	var sim: Object = SAND_SIM.new()
+	sim.setup(80, 60, _materials())
+	sim.fill_rect(0, 50, 80, 10, STONE_ID)
+	sim.fill_rect(0, 5, 80, 1, STONE_ID)
+	sim.fill_rect(0, 5, 1, 45, STONE_ID)
+	sim.fill_rect(79, 5, 1, 45, STONE_ID)
+	sim.fill_rect(10, 15, 25, 25, WATER_ID)  # 625 клеток
+	var mass0: int = sim.count_material(WATER_ID)
+	var t := _run_to_rest(sim, 5000)
+	_check("большой объём воды оседает (не дребезжит вечно)", t != -1,
+		"тиков %d (или -1, если не осело за 5000)" % t)
+	_check("масса большого объёма сохранена", sim.count_material(WATER_ID) == mass0,
+		"было %d, стало %d" % [mass0, sim.count_material(WATER_ID)])
