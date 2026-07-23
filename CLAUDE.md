@@ -150,17 +150,22 @@ HD-растровом виде, без пиксельной стилизации
 
 ## Сборка, запуск и тесты
 
-Godot-проект — в `Wings-clone/`. Godot 4.7.1 не в PATH, лежит на рабочем столе:
-`C:\Users\user\Desktop\Godot_v4.7.1-stable_win64.exe\Godot_v4.7.1-stable_win64_console.exe`
-(console-сборка — та, что печатает вывод в терминал; нужна для headless-тестов).
+Основная машина разработки — Mac (M1 Max). Godot-проект — в `Wings-clone/`.
+Godot 4.7.1 не в PATH, стоит как `/Applications/Godot.app`. Отдельная
+console-сборка не нужна — mac-бинарник и так печатает вывод в терминал.
 
 Запуск игры (главная сцена — `scenes/level/level.tscn`, класс Level):
 - в редакторе: открыть проект и нажать Play (F5);
-- из терминала: `& $godot --path Wings-clone` (без `--headless` — нужно окно).
+- из терминала: `/Applications/Godot.app/Contents/MacOS/Godot --path Wings-clone`
+  (без `--headless` — нужно окно).
 
 Headless-тесты и диагностика (без окна, печатают ИТОГ и код возврата):
 
-    & $godot --headless --path Wings-clone res://tools/test_ship.tscn
+    /Applications/Godot.app/Contents/MacOS/Godot --headless --path Wings-clone res://tools/test_ship.tscn
+
+Финальный экспорт под Steam Deck (Windows-сборка через Proton) по-прежнему
+делается на отдельном ПК — это единственный шаг, для которого нужна
+Windows-машина, повседневная разработка и тесты от неё не зависят.
 
 - `tools/test_ship.tscn` — основной набор (полёт, оружие, урон по материалам,
   спавн, правила GameRules). Сейчас **29 проверок**, ждём «29 пройдено, 0 провалено».
