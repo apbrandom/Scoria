@@ -1,6 +1,6 @@
-[gd_scene load_steps=2 format=3]
+[gd_scene format=3 uid="uid://8i6pqap3odon"]
 
-[ext_resource type="Script" path="res://tools/sand_playground.gd" id="1_sandpg"]
+[ext_resource type="Script" uid="uid://lpbp2yy0l1uh" path="res://tools/sand_playground.gd" id="1_sandpg"]
 
-[node name="SandPlayground" type="Node2D"]
+[node name="SandPlayground" type="Node2D" unique_id=929497050]
 script = ExtResource("1_sandpg")
