@@ -17,6 +17,7 @@
 extends Node
 
 const SAND_SIM := preload("res://scripts/sand/sand_sim.gd")
+const SAND_MATERIAL_SCRIPT := preload("res://resources/sand_material.gd")
 const M_EMPTY := preload("res://data/sand/empty.tres")
 const M_SAND := preload("res://data/sand/sand.tres")
 const M_STONE := preload("res://data/sand/stone.tres")
@@ -52,6 +53,14 @@ func _ready() -> void:
 	_test_water_extinguishes_fire()
 	_test_determinism_all_materials()
 	_test_dirty_rect_with_reactions()
+	# --- фидбек по итогам первой сборки: вязкость воды, гравитация дерева ---
+	_test_viscosity_slows_water()
+	_test_wood_falls_when_unsupported()
+	_test_wood_stays_when_supported()
+	_test_wood_falls_as_rigid_group()
+	_test_wood_fall_blocked_by_obstacle()
+	_test_falling_wood_determinism()
+	_test_wood_fall_dirty_rect_matches_full()
 	print("\n=== ИТОГ: %d пройдено, %d провалено ===" % [_pass, _fail])
 	get_tree().quit(1 if _fail > 0 else 0)
 
@@ -308,13 +317,17 @@ func _test_powder_sinks_in_water() -> void:
 
 
 # Огонь поджигает дерево, распространяется по нему и полностью его сжигает,
-# после чего гаснет сам (нет топлива) -> система оседает.
+# после чего гаснет сам (нет топлива) -> система оседает. Дерево падает
+# (SandMaterial.falls) -> балка стоит НА ПОЛУ, не парит, иначе она успеет
+# упасть раньше, чем огонь до неё доберётся (реальная грабля, найдена этим же
+# тестом на предыдущей версии сценария после включения falls=true).
 func _test_fire_consumes_wood() -> void:
 	var sim: Object = SAND_SIM.new()
 	sim.setup(30, 20, _materials())
-	sim.fill_rect(5, 8, 15, 2, WOOD_ID)   # балка дерева (30 клеток), парит
+	sim.fill_rect(0, 18, 30, 2, STONE_ID)  # пол
+	sim.fill_rect(5, 16, 15, 2, WOOD_ID)   # балка дерева (30 клеток) на полу
 	var wood0: int = sim.count_material(WOOD_ID)
-	sim.set_cell(4, 8, FIRE_ID)            # поджечь слева
+	sim.set_cell(4, 16, FIRE_ID)            # поджечь слева на той же высоте
 	var t := _run_to_rest(sim, 3000)
 	_check("дерево изначально было (30)", wood0 == 30, "было %d" % wood0)
 	_check("огонь+дерево оседают (всё выгорело)", t != -1, "тиков %d" % t)
@@ -389,3 +402,171 @@ func _test_dirty_rect_with_reactions() -> void:
 			break
 	_check("dirty-rect == полный проход и с реакциями (вода/огонь)",
 		diverged_at == -1, "разошлись на тике %d" % diverged_at)
+
+
+# ── фидбек: вязкость воды, гравитация дерева ───────────────────────────────
+
+# Два материала-жидкости, отличающиеся ТОЛЬКО вязкостью — вязкая должна
+# откликаться медленнее (больше тиков до покоя) на абсолютно той же сцене.
+# Материалы строим в коде (не через .tres) — единственный способ получить два
+# варианта одного kind с разными числами без создания лишних файлов ресурсов.
+func _test_viscosity_slows_water() -> void:
+	var thin: Object = SAND_MATERIAL_SCRIPT.new()
+	thin.id = 3
+	thin.kind = 3  # LIQUID
+	thin.color = Color(0.2, 0.4, 0.9, 1)
+	thin.viscosity = 0.0
+
+	var thick: Object = SAND_MATERIAL_SCRIPT.new()
+	thick.id = 3
+	thick.kind = 3
+	thick.color = Color(0.2, 0.4, 0.9, 1)
+	thick.viscosity = 0.9
+
+	var sim_thin: Object = SAND_SIM.new()
+	sim_thin.setup(40, 30, [M_EMPTY, M_STONE, thin])
+	sim_thin.fill_rect(0, 26, 40, 4, STONE_ID)
+	sim_thin.fill_rect(18, 10, 4, 16, 3)
+
+	var sim_thick: Object = SAND_SIM.new()
+	sim_thick.setup(40, 30, [M_EMPTY, M_STONE, thick])
+	sim_thick.fill_rect(0, 26, 40, 4, STONE_ID)
+	sim_thick.fill_rect(18, 10, 4, 16, 3)
+
+	var t_thin := _run_to_rest(sim_thin, 4000)
+	var t_thick := _run_to_rest(sim_thick, 4000)
+	_check("маловязкая вода оседает", t_thin != -1, "тиков %d" % t_thin)
+	_check("вязкая вода оседает", t_thick != -1, "тиков %d" % t_thick)
+	_check("вязкость реально замедляет отклик (больше тиков до покоя)",
+		t_thick > t_thin, "маловязкая %d тиков, вязкая %d тиков" % [t_thin, t_thick])
+
+
+# Дерево в воздухе, пола вообще нет — должно упасть до самого дна мира
+# (гравитация подействовала, а не "парит" как раньше).
+func _test_wood_falls_when_unsupported() -> void:
+	var sim: Object = SAND_SIM.new()
+	sim.setup(20, 20, _materials())
+	sim.fill_rect(5, 2, 6, 2, WOOD_ID)  # балка в воздухе, опоры нет вообще
+	var wood0: int = sim.count_material(WOOD_ID)
+	var t := _run_to_rest(sim, 200)
+	_check("дерево в воздухе оседает (падает до дна)", t != -1, "тиков %d" % t)
+	var max_y := -1
+	for y in 20:
+		for x in 20:
+			if sim.get_cell(x, y) == WOOD_ID:
+				max_y = maxi(max_y, y)
+	_check("дерево упало до самого дна мира", max_y == 19,
+		"нижний ряд балки на y=%d (ожидали 19)" % max_y)
+	_check("масса дерева сохранена при падении", sim.count_material(WOOD_ID) == wood0,
+		"было %d, стало %d" % [wood0, sim.count_material(WOOD_ID)])
+
+
+# Дерево прямо на полу — не должно шевелиться вообще (уже есть опора).
+func _test_wood_stays_when_supported() -> void:
+	var sim: Object = SAND_SIM.new()
+	sim.setup(20, 20, _materials())
+	sim.fill_rect(0, 15, 20, 5, STONE_ID)  # пол
+	sim.fill_rect(5, 13, 6, 2, WOOD_ID)    # балка прямо на полу
+	var before: Array = []
+	for y in 20:
+		for x in 20:
+			if sim.get_cell(x, y) == WOOD_ID:
+				before.append(Vector2i(x, y))
+	for _i in 100:
+		sim.step()
+	var after: Array = []
+	for y in 20:
+		for x in 20:
+			if sim.get_cell(x, y) == WOOD_ID:
+				after.append(Vector2i(x, y))
+	_check("дерево на опоре не падает (позиции не изменились)", before == after,
+		"было %d клеток, стало %d" % [before.size(), after.size()])
+
+
+# Балка над полом с зазором — должна упасть и приземлиться, СОХРАНИВ форму
+# (весь прямоугольник целиком, не рассыпавшись на отдельные зёрна) — это и
+# отличает SOLID+falls (дерево) от POWDER (песок сыплется зерном).
+func _test_wood_falls_as_rigid_group() -> void:
+	var sim: Object = SAND_SIM.new()
+	sim.setup(20, 20, _materials())
+	sim.fill_rect(0, 15, 20, 5, STONE_ID)  # пол на y=15..19
+	sim.fill_rect(5, 5, 6, 2, WOOD_ID)     # балка 6x2 высоко в воздухе
+	var t := _run_to_rest(sim, 200)
+	_check("дерево над полом оседает", t != -1, "тиков %d" % t)
+	var cells := {}
+	for y in 20:
+		for x in 20:
+			if sim.get_cell(x, y) == WOOD_ID:
+				cells[Vector2i(x, y)] = true
+	var shape_ok := cells.size() == 12
+	if shape_ok:
+		for yy in range(13, 15):
+			for xx in range(5, 11):
+				if not cells.has(Vector2i(xx, yy)):
+					shape_ok = false
+	_check("балка приземлилась целиком, сохранив форму 6x2 (не рассыпалась)", shape_ok,
+		"клеток дерева после падения: %d" % cells.size())
+
+
+# Выступ точно под серединой балки — жёсткое тело не может продавить
+# препятствие частично, значит балка не сдвинется ВООБЩЕ (не только в месте
+# препятствия — целиком, ни один край тоже).
+func _test_wood_fall_blocked_by_obstacle() -> void:
+	var sim: Object = SAND_SIM.new()
+	sim.setup(20, 20, _materials())
+	sim.fill_rect(0, 15, 20, 5, STONE_ID)  # пол
+	sim.set_cell(8, 9, STONE_ID)            # выступ прямо под серединой балки
+	sim.fill_rect(5, 8, 6, 1, WOOD_ID)      # балка 6x1 на y=8, упирается в выступ
+	var before: Array = []
+	for x in 20:
+		if sim.get_cell(x, 8) == WOOD_ID:
+			before.append(x)
+	for _i in 50:
+		sim.step()
+	var after: Array = []
+	for x in 20:
+		if sim.get_cell(x, 8) == WOOD_ID:
+			after.append(x)
+	_check("балка, упёртая выступом, не падает частично (осталась на месте)",
+		before == after, "было %s, стало %s" % [before, after])
+
+
+func _test_falling_wood_determinism() -> void:
+	var a: Object = SAND_SIM.new()
+	a.setup(24, 24, _materials())
+	a.fill_rect(0, 20, 24, 4, STONE_ID)
+	a.fill_rect(6, 4, 8, 3, WOOD_ID)
+	var b: Object = SAND_SIM.new()
+	b.setup(24, 24, _materials())
+	b.fill_rect(0, 20, 24, 4, STONE_ID)
+	b.fill_rect(6, 4, 8, 3, WOOD_ID)
+	for _i in 100:
+		a.step()
+		b.step()
+	_check("падение дерева детерминировано", a.grid_hash() == b.grid_hash(),
+		"hashA=%d hashB=%d" % [a.grid_hash(), b.grid_hash()])
+
+
+func _test_wood_fall_dirty_rect_matches_full() -> void:
+	var opt: Object = SAND_SIM.new()
+	opt.setup(24, 24, _materials())
+	opt.fill_rect(0, 20, 24, 4, STONE_ID)
+	opt.set_cell(12, 19, STONE_ID)  # выступ — балка ляжет неровно/частично
+	opt.fill_rect(6, 4, 8, 3, WOOD_ID)
+
+	var full: Object = SAND_SIM.new()
+	full.setup(24, 24, _materials())
+	full.fill_rect(0, 20, 24, 4, STONE_ID)
+	full.set_cell(12, 19, STONE_ID)
+	full.fill_rect(6, 4, 8, 3, WOOD_ID)
+	full.force_full_scan = true
+
+	var diverged_at := -1
+	for i in 200:
+		opt.step()
+		full.step()
+		if opt.grid_hash() != full.grid_hash():
+			diverged_at = i
+			break
+	_check("dirty-rect == полный проход при падении дерева", diverged_at == -1,
+		"разошлись на тике %d" % diverged_at)

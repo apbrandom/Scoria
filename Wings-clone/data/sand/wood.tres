@@ -10,4 +10,5 @@ kind = 1
 color = Color(0.45, 0.28, 0.13, 1)
 density = 4.0
 flammable = true
-burn_life = 80
+burn_life = 240
+falls = true

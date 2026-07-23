@@ -11,3 +11,5 @@ color = Color(0.2, 0.45, 0.85, 0.9)
 density = 1.0
 flammable = false
 burn_life = 0
+viscosity = 0.15
+inertia = 0.5
