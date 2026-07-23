@@ -10,3 +10,4 @@ kind = 3
 color = Color(0.2, 0.45, 0.85, 0.9)
 viscosity = 0.15
 inertia = 0.5
+edge_creep_chance = 0.5

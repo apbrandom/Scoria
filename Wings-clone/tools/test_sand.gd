@@ -62,6 +62,8 @@ func _ready() -> void:
 	_test_falling_wood_determinism()
 	_test_wood_fall_dirty_rect_matches_full()
 	_test_large_water_volume_settles_without_jitter()
+	_test_water_escapes_slope_footprint()
+	_test_isolated_water_drop_settles_instantly()
 	print("\n=== ИТОГ: %d пройдено, %d провалено ===" % [_pass, _fail])
 	get_tree().quit(1 if _fail > 0 else 0)
 
@@ -592,3 +594,53 @@ func _test_large_water_volume_settles_without_jitter() -> void:
 		"тиков %d (или -1, если не осело за 5000)" % t)
 	_check("масса большого объёма сохранена", sim.count_material(WATER_ID) == mass0,
 		"было %d, стало %d" % [mass0, sim.count_material(WATER_ID)])
+
+
+## Регресс на живой баг заказчика (скриншот "три холма не сливаются", devlog):
+## вода, налитая на склон уже осевшей кучи песка, застревала НАВСЕГДА ровно на
+## границе исходного пятна (порог >=2 не даёт сделать последний шаг в
+## девственную колонку). Фикс — SandMaterial.edge_creep_chance с проверкой
+## "подпёрто ли тело" (см. _liquid_horizontal_flow). Тест — то же самое, что
+## диагностика, которой баг был найден и проверен: куча песка + вода на склон,
+## смотрим, ушла ли вода за пределы исходного основания кучи.
+func _test_water_escapes_slope_footprint() -> void:
+	var sim: Object = SAND_SIM.new()
+	sim.setup(70, 45, _materials())
+	sim.fill_rect(0, 44, 70, 1, STONE_ID)
+	sim.fill_rect(20, 24, 1, 20, SAND_ID)  # столбик песка, даём осесть в кучу
+	for i in range(1500):
+		sim.step()
+	var sand_bb := _bbox(sim, SAND_ID)
+	var pile_min_x: int = sand_bb[0]
+	var pile_max_x: int = sand_bb[1]
+
+	for y in range(6, 10):
+		for x in range(24, 30):
+			sim.set_cell(x, y, WATER_ID)  # вода на правый склон кучи
+	var mass0: int = sim.count_material(WATER_ID)
+
+	for i in range(6000):
+		sim.step()
+
+	var water_bb := _bbox(sim, WATER_ID)
+	var escaped: bool = water_bb[4] > 0 and (water_bb[0] < pile_min_x or water_bb[1] > pile_max_x)
+	_check("вода на склоне кучи со временем выходит за пределы исходного основания",
+		escaped, "куча x=[%d,%d], вода x=[%d,%d]" % [pile_min_x, pile_max_x, water_bb[0], water_bb[1]])
+	_check("масса воды на склоне сохранена", sim.count_material(WATER_ID) == mass0,
+		"было %d, стало %d" % [mass0, sim.count_material(WATER_ID)])
+
+
+## Регресс на баг, найденный при реализации edge_creep_chance: без проверки
+## "подпёрто ли тело" ОДИНОКАЯ капля (масса=1, оба соседа всегда девственны)
+## дрожала бы по шансу НАВСЕГДА, никогда не оседая. Настоящая одинокая капля
+## должна осесть сразу же (некуда течь — оба соседа "девственны", но не
+## подпёрты телом) и остаться на месте.
+func _test_isolated_water_drop_settles_instantly() -> void:
+	var sim: Object = SAND_SIM.new()
+	sim.setup(20, 10, _materials())
+	sim.fill_rect(0, 8, 20, 1, STONE_ID)
+	sim.set_cell(10, 7, WATER_ID)
+	var t := _run_to_rest(sim, 10)
+	_check("одинокая капля оседает мгновенно (не дрожит)", t == 0, "тиков %d" % t)
+	_check("одинокая капля осталась на месте", sim.get_cell(10, 7) == WATER_ID,
+		"клетка (10,7) = %d (ожидали %d)" % [sim.get_cell(10, 7), WATER_ID])

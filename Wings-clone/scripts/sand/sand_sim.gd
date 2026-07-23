@@ -82,6 +82,7 @@ var _viscosity_of: PackedFloat32Array
 var _inertia_of: PackedFloat32Array
 var _falls_of: PackedByteArray
 var _ignite_chance_of: PackedFloat32Array
+var _edge_creep_of: PackedFloat32Array
 var _color_of: Array = []
 ## id материала с kind==FIRE (во что превращается горючее и что ставит кисть
 ## огня). -1, если в наборе огня нет — тогда логика огня не работает.
@@ -124,6 +125,7 @@ func setup(w: int, h: int, materials: Array) -> void:
 	_inertia_of = PackedFloat32Array();   _inertia_of.resize(max_id + 1)
 	_falls_of = PackedByteArray();        _falls_of.resize(max_id + 1)
 	_ignite_chance_of = PackedFloat32Array(); _ignite_chance_of.resize(max_id + 1)
+	_edge_creep_of = PackedFloat32Array(); _edge_creep_of.resize(max_id + 1)
 	_color_of = []; _color_of.resize(max_id + 1)
 	for i in _color_of.size():
 		_color_of[i] = Color(0, 0, 0, 0)
@@ -138,6 +140,7 @@ func setup(w: int, h: int, materials: Array) -> void:
 		_inertia_of[m.id] = m.inertia
 		_falls_of[m.id] = 1 if m.falls else 0
 		_ignite_chance_of[m.id] = m.ignite_chance
+		_edge_creep_of[m.id] = m.edge_creep_chance
 		_color_of[m.id] = m.color
 		if m.kind == KIND_FIRE:
 			_fire_id = m.id
@@ -318,6 +321,40 @@ func _step_powder(x: int, y: int, id: int) -> void:
 ## выровнено, дальше не долбим" — соседние колонки могут отличаться на 1
 ## (неизбежно при нечётной массе), это разрешённый финальный покой, не баг.
 ##
+## НАЙДЕНО ПОЗЖЕ (живой тест заказчика, скриншот "три холма не сливаются"):
+## порог 2 сам создаёт ДРУГУЮ проблему — край растекающейся лужи истончается
+## до 1 клетки, а с ДЕВСТВЕННОЙ (совсем сухой) соседней колонкой разница ровно
+## 1 — навсегда ниже порога. Край физически не может сделать последний шаг в
+## новую территорию, при том что is_active() честно считает себя осевшим (не
+## дребезг, а неправильный, преждевременный покой). Проверено диагностикой
+## (100x50, куча песка + вода на склон, 8000 тиков, is_active()==false, воды
+## за пределами исходного пятна = 0).
+##
+## Пробовал вернуть порог 1 целиком — тут же вернулся старый баг ШИРЕ, чем
+## ожидалось: не только одиночная капля, а ЛЮБОЕ тело на много колонок с
+## нечётным распределением (тест "большой объём... не дребезжит вечно" тоже
+## упал). Инерция (добавлена позже раунда 1) сама по себе НЕ спасает — она
+## лишь чуть чаще продолжает то же направление, не устраняет двухтактный цикл.
+##
+## Пробовал ЖЁСТКОЕ правило "разрешить шаг в девственную колонку без вязкости,
+## если в источнике остаётся резерв (count>=2 ДО хода)" — математически это
+## оказалось ТОЖДЕСТВЕННО обычному порогу >=2 (count[to]==0 и count[from]>=2
+## само по себе уже означает diff=count[from]>=2), проверил перебором и
+## прогоном — ни на одном тесте ни на диагностике поведение не поменялось ни
+## на бит. Пустая ветка, убрал.
+##
+## Рабочее решение — SandMaterial.edge_creep_chance: разница ровно в 1 клетку
+## с ДЕВСТВЕННОЙ (count==0) соседней колонкой разрешена ВЕРОЯТНОСТНО (тот же
+## `_chance()`, что и у вязкости/инертности/огня), а не безусловно. Одиночная
+## капля (total mass=1, оба соседа пустые) при малом шансе почти всегда стоит
+## смирно — просто изредка подрагивает, а не дребезжит каждый тик; настоящий
+## фронт с массой позади (много клеток одновременно бросают кубик) статистически
+## почти наверняка продвинется в разумное число тиков, потому что кому-то из
+## многих кандидатов повезёт. Честная цена: край лужи НИКОГДА не станет
+## идеально неподвижным навсегда (пока есть открытая девственная территория
+## рядом) — заведомо принятый компромисс, а не порог "diff>=2" (который
+## останавливает целую линию колонок, а не одну клетку).
+##
 ## Вязкость/инертность (SandMaterial.viscosity/inertia): вязкость проверяется
 ## ТОЛЬКО когда ход уже найден (иначе честно осевшая лужа никогда бы не
 ## уснула — ложная активность каждый тик). Направление вбок хранится в _aux
@@ -332,6 +369,10 @@ func _step_liquid(x: int, y: int, id: int) -> void:
 	var ty := y
 	var new_dir := prev_dir
 	var found := false
+	## Бросок edge_creep_chance в этот тик не выпал, но шанс есть — клетку
+	## НЕЛЬЗЯ давать заснуть (выпасть из dirty-rect), иначе она больше никогда
+	## не попадёт на переоценку и шанс так и останется неиспользованным навсегда.
+	var creep_pending := false
 
 	var below := y + 1
 	if below < height and _is_empty(x, below):
@@ -344,12 +385,23 @@ func _step_liquid(x: int, y: int, id: int) -> void:
 			tx = x + d; ty = below; new_dir = _encode_dir(d); found = true
 		elif below < height and _is_empty(x - d, below):
 			tx = x - d; ty = below; new_dir = _encode_dir(-d); found = true
-		elif _is_empty(x + d, y) and _liquid_col_count[x] - _liquid_col_count[x + d] >= 2:
-			tx = x + d; ty = y; new_dir = _encode_dir(d); found = true
-		elif _is_empty(x - d, y) and _liquid_col_count[x] - _liquid_col_count[x - d] >= 2:
-			tx = x - d; ty = y; new_dir = _encode_dir(-d); found = true
+		else:
+			if _is_empty(x + d, y):
+				var r := _liquid_horizontal_flow(x, y, id, x, x + d)
+				if r == 1:
+					tx = x + d; ty = y; new_dir = _encode_dir(d); found = true
+				elif r == 2:
+					creep_pending = true
+			if not found and _is_empty(x - d, y):
+				var r2 := _liquid_horizontal_flow(x, y, id, x, x - d)
+				if r2 == 1:
+					tx = x - d; ty = y; new_dir = _encode_dir(-d); found = true
+				elif r2 == 2:
+					creep_pending = true
 
 	if not found:
+		if creep_pending:
+			_mark_dirty(x, y)  # шанс не выпал в этот тик — попробуем на следующем
 		return  # действительно некуда течь — покой, не помечаем грязным
 
 	if _viscosity_of[id] > 0.0 and _chance(x, y, tick, 1) < _viscosity_of[id]:
@@ -358,6 +410,33 @@ func _step_liquid(x: int, y: int, id: int) -> void:
 
 	_move_to_empty(x, y, tx, ty, id)
 	_aux[ty * width + tx] = new_dir
+
+
+## Можно ли жидкости шагнуть из колонки from_col в соседнюю to_col (расчёт —
+## см. большой комментарий над _step_liquid). Возврат: 1 — да, двигаться
+## прямо сейчас; 2 — шанс был, но бросок в этот тик не выпал (звать снова
+## позже, не спать); 0 — хода нет вообще (разница <1, или соседняя колонка не
+## девственная и не набрала обычный порог 2, или creep не подпёрт телом сзади).
+##
+## "Подпёрт" (flanked) — с ПРОТИВОПОЛОЖНОЙ от цели стороны источника есть ещё
+## жидкость (count>=1). Без этой проверки одинокая капля (масса=1, ОБА соседа
+## всегда девственны) подрагивала бы по chance НАВСЕГДА, никогда не оседая —
+## поймано диагностикой (сцена "вода тушит огонь", 20 000 тиков — не осела).
+## Настоящий край большого тела всегда подпёрт телом с одной стороны — только
+## внешняя грань девственна; одиночка не подпёрта НИКОГДА (обе стороны пустые).
+func _liquid_horizontal_flow(x: int, y: int, id: int, from_col: int, to_col: int) -> int:
+	var diff := _liquid_col_count[from_col] - _liquid_col_count[to_col]
+	if diff >= 2:
+		return 1
+	if diff == 1 and _liquid_col_count[to_col] == 0 and _edge_creep_of[id] > 0.0:
+		var opposite_col := 2 * from_col - to_col
+		var flanked := opposite_col >= 0 and opposite_col < width and _liquid_col_count[opposite_col] >= 1
+		if not flanked:
+			return 0
+		if _chance(x, y, tick, 3) < _edge_creep_of[id]:
+			return 1
+		return 2
+	return 0
 
 
 func _choose_dir(x: int, y: int, prev_dir: int, id: int) -> int:
