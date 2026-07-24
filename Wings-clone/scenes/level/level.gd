@@ -48,8 +48,16 @@ const SAND_LEVEL_GEN_SCRIPT := preload("res://scripts/level/sand_level_gen.gd")
 ## replay").
 const LEVEL_SEED := 1337
 ## Широкий и плоский, не квадрат — "много открытого пространства" ложится
-## лучше на широкий экран.
-const SAND_LEVEL_SIZE := Vector2i(1800, 900)
+## лучше на широкий экран. Замерено (tools/, разово): 1800x900 -> 1.1с,
+## 2700x1350 -> 2.1с, 5400x2700 -> 4.9с генерации SandLevelGen — рост терпимый
+## (не взрывается комбинаторно), но это одноразовая загрузка уровня, не кадр
+## игры, так что не бесконечно — несколько секунд ещё комфортно, 5-10+ уже
+## ощущается как настоящий экран загрузки.
+const SAND_LEVEL_SIZE := Vector2i(2700, 1350)
+
+## Толщина невидимых стен-границ уровня (см. _build_world_bounds) — с запасом
+## больше типичной скорости корабля за физ-кадр, чтобы не туннелировало.
+const WORLD_BOUNDS_THICKNESS := 300.0
 const MENU_SCENE := "res://scenes/menu/main_menu.tscn"
 
 ## Камера кадрирует ОБА корабля: зажимаем зум сверху/снизу и оставляем запас
@@ -98,6 +106,7 @@ func _ready() -> void:
 	add_child(_terrain)
 	_terrain.load_level(vis, msk)
 	_terrain.add_to_group("terrain")
+	_build_world_bounds(_terrain.size)
 
 	_debug = TerrainDebugDraw.new()
 	_debug.terrain = _terrain
@@ -139,6 +148,33 @@ func _ready() -> void:
 	_cam.make_current()
 
 	_hud = HUD_LABEL_SCRIPT.build(self)
+
+
+## Невидимые стены по периметру (0,0)-(size) — не дают кораблю физически
+## улететь за пределы уровня. Независимо от того, что генерирует сам рельеф
+## (SandLevelGen кладёт камень по бокам/низу, но НЕ над открытым небом — там
+## кораблю и положено летать) — это отдельная, гарантированная граница уровня,
+## а не побочный эффект материала рельефа. Низ и так закрыт камнем из
+## генератора (see sand_level_gen.gd), стена там просто перестраховка вторым
+## независимым способом — дёшево, без недостатков.
+func _build_world_bounds(size: Vector2i) -> void:
+	var t := WORLD_BOUNDS_THICKNESS
+	var walls := StaticBody2D.new()
+	walls.name = "WorldBounds"
+	add_child(walls)
+	_add_wall(walls, Vector2(-t / 2.0, size.y / 2.0), Vector2(t, size.y + t * 2.0))
+	_add_wall(walls, Vector2(size.x + t / 2.0, size.y / 2.0), Vector2(t, size.y + t * 2.0))
+	_add_wall(walls, Vector2(size.x / 2.0, -t / 2.0), Vector2(size.x + t * 2.0, t))
+	_add_wall(walls, Vector2(size.x / 2.0, size.y + t / 2.0), Vector2(size.x + t * 2.0, t))
+
+
+func _add_wall(parent: StaticBody2D, center: Vector2, extent: Vector2) -> void:
+	var shape := CollisionShape2D.new()
+	var rect := RectangleShape2D.new()
+	rect.size = extent
+	shape.shape = rect
+	shape.position = center
+	parent.add_child(shape)
 
 
 func _process(_delta: float) -> void:
