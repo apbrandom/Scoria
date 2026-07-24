@@ -2,7 +2,7 @@
 ##
 ## ЛКМ (зажать) — рисовать текущим материалом,  колесо — размер кисти
 ## 1 песок · 2 камень · 3 вода · 4 земля · 5 дерево · 6 огонь · 0 ластик
-## F2 — очистить (пол заново),  ESC — выход
+## F2 — очистить (пол заново),  F — выровнять воду ("спящее тело"),  ESC — выход
 ##
 ## Логика симуляции — в scripts/sand/sand_sim.gd (проверена headless в
 ## tools/test_sand.gd). Здесь только ввод + отрисовка поля в текстуру. Это
@@ -45,6 +45,7 @@ var _hud: Label
 var _brush_id := SAND_ID
 var _brush_r := 4
 var _render := true
+var _last_flatten := -1  # -1 = ещё не нажимали F
 
 
 func _ready() -> void:
@@ -141,6 +142,8 @@ func _unhandled_input(event: InputEvent) -> void:
 				_brush_id = EMPTY_ID
 			KEY_F2:
 				_reset_floor()
+			KEY_F:
+				_last_flatten = _sim.flatten_liquid_bodies()
 			KEY_ESCAPE:
 				get_tree().quit()
 
@@ -166,8 +169,10 @@ func _update_hud() -> void:
 		"песка на поле: %d" % _sim.count_material(SAND_ID),
 		"активно (idle=покой): %s   грязный прямоугольник %dx%d" % [
 			"да" if _sim.is_active() else "нет (покой)", rect.size.x, rect.size.y],
+		("F — выровнять воду: тел обработано %d" % _last_flatten) if _last_flatten >= 0
+			else "F — выровнять воду ('спящее тело'), ещё не нажималось",
 		"",
-		"ЛКМ рисовать · F2 очистить · ESC выход",
+		"ЛКМ рисовать · F2 очистить · F выровнять воду · ESC выход",
 	])
 
 
