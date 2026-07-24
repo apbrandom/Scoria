@@ -3,18 +3,22 @@
 ## детерминизм, сохранение массы, оседание, корректность dirty-rect, поведение
 ## воды/огня. Отрисовку/ввод берёт tools/sand_playground.gd.
 ##
-## СТАТУС ВОДЫ (2026-07-24, читать перед тем как патчить _step_liquid ещё раз):
-## жидкость здесь — БИНАРНАЯ клетка (есть/нет), известный и принятый предел —
+## СТАТУС ВОДЫ (обновлено 2026-07-24, devlog §43 — читать перед тем как
+## патчить _step_liquid или flatten_liquid_bodies ещё раз): жидкость здесь —
+## БИНАРНАЯ клетка (есть/нет). Потиковая диффузия (_step_liquid) САМА ПО СЕБЕ
 ## на большом объёме оседает холмом/буграми, не идеальной плоскостью (не баг,
-## математическое свойство локального клеточного правила, см. devlog §36-38,
-## notes/terrain_research.md). Это ПРИНЯТО как боевой статус-кво, решение НЕ
-## менять его сознательно отложено, не забыто. Альтернатива — модель массы
-## (переток под давлением, умеет течь вверх) — доказана на прототипе
-## (`tools/liquid_mass_sim.gd` + `tools/test_liquid_mass.gd`, 3/4 инварианта
-## зелёные), но НЕ интегрирована сюда: решение "заменить или нет" — отдельная
-## осознанная сессия, не патч. Не плодить третий параллельный вариант воды —
+## математическое свойство локального клеточного правила, devlog §36-38) —
+## но с 2026-07-24 это больше не конечный результат: flatten_liquid_bodies()
+## (флуд-филл + мгновенный пересчёт по объёму, см. ниже) вызывается явно
+## ПОСЛЕ оседания (сейчас — один раз в SandLevelGen.generate()) и приводит
+## тело к настоящей плоскости. Практическая проблема "холм не озеро" решена
+## этим, БЕЗ замены модели на массу. Альтернатива — модель массы (переток под
+## давлением, умеет течь вверх) — доказана на прототипе (`tools/liquid_mass_sim.gd`
+## + `tools/test_liquid_mass.gd`, 3/4 инварианта зелёные), но НЕ интегрирована
+## и, возможно, больше не нужна — решение по-прежнему отдельное (roadmap.md,
+## "Милстоун 3.5, часть 2"). Не плодить третий параллельный вариант воды —
 ## если трогаешь жидкость, сначала прочитай оба файла и текущий статус в
-## roadmap.md ("Милстоун 3.5").
+## roadmap.md.
 ##
 ## Модель данных:
 ##  - _cells — байт на ячейку = id материала (0 = пусто). Источник истины мира.
@@ -742,3 +746,165 @@ func to_rgba_bytes() -> PackedByteArray:
 		out[o + 2] = int(round(c.b * 255.0))
 		out[o + 3] = int(round(c.a * 255.0))
 	return out
+
+
+# ---------------------------------------------------------------- "спящее тело"
+
+## Насколько клеток вверх от текущего верха тела разрешено расширять поиск
+## доступного объёма (см. _flatten_one_body) — без потолка пришлось бы гулять
+## по всему открытому небу над озером (у нас оно намеренно безграничное,
+## "много открытого пространства", см. sand_level_gen.gd). 64 клетки — с
+## большим запасом сверх реальных объёмов, которые встречаются в текущих
+## уровнях (озёра SandLevelGen — единицы клеток глубиной), но не бесконечно.
+const FLATTEN_RISE_MARGIN := 64
+
+## Флуд-филл каждого связного тела жидкости на всём поле и мгновенный пересчёт
+## в идеально плоский уровень по объёму — вместо потиковой сходимости локальной
+## диффузии. Решает фундаментальный предел, описанный в большом комментарии
+## над _step_liquid: локальное правило может сравнивать только соседа, поэтому
+## большое озеро либо сходится к плоскости целую вечность, либо навсегда
+## остаётся холмом (devlog §36-38, notes/terrain_research.md). Здесь вместо
+## этого — один точный проход: связность + объём + доступная ширина, без
+## единого float в решении (тот же инвариант детерминизма, что у всего файла —
+## нужен для будущего сетевого replay).
+##
+## НЕ вызывается из step() — это НЕ часть живого тика (O(площадь тела), а не
+## O(1), навязывать это каждый тик сломало бы "покой = ноль работы"). Вызывать
+## явно, когда симуляция реально осела (typично — один раз после генерации
+## уровня, см. SandLevelGen.generate()).
+##
+## Возвращает число обработанных тел (для тестов/статистики).
+func flatten_liquid_bodies() -> int:
+	var visited := PackedByteArray()
+	visited.resize(width * height)
+	var flattened := 0
+	for i in _cells.size():
+		if visited[i] != 0:
+			continue
+		var id := _cells[i]
+		if _kind_of[id] != KIND_LIQUID:
+			continue
+		_flatten_one_body(i % width, i / width, id, visited)
+		flattened += 1
+	return flattened
+
+
+const _NEIGHBOR_OFFSETS := [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]
+
+## Одно тело: (1) BFS ТОЛЬКО через клетки с материалом id — находим объём и
+## текущий верх тела; (2) BFS через (EMPTY + id), ограниченный по высоте
+## FLATTEN_RISE_MARGIN клеток выше текущего верха, — находим "контейнер"
+## (кэвити) и точную доступную ширину на каждой строке; (3) снизу вверх
+## копим ширину строк, пока не наберём объём — это и есть высота равновесия;
+## (4) явно расставляем клетки: ниже равновесия — жидкость, выше — пусто,
+## частичная верхняя строка — детерминированно (по возрастанию x) добирает
+## остаток. visited помечается для клеток тела (чтобы flatten_liquid_bodies
+## не заходил в то же тело повторно).
+func _flatten_one_body(sx: int, sy: int, id: int, visited: PackedByteArray) -> void:
+	var start := sy * width + sx
+	var body_stack := PackedInt32Array([start])
+	visited[start] = 1
+	var volume := 0
+	var min_y := sy
+	while not body_stack.is_empty():
+		var i: int = body_stack[body_stack.size() - 1]
+		body_stack.resize(body_stack.size() - 1)
+		volume += 1
+		var x := i % width
+		var y := i / width
+		min_y = mini(min_y, y)
+		for off in _NEIGHBOR_OFFSETS:
+			var nx: int = x + off.x
+			var ny: int = y + off.y
+			if not in_bounds(nx, ny):
+				continue
+			var ni: int = ny * width + nx
+			if visited[ni] != 0 or _cells[ni] != id:
+				continue
+			visited[ni] = 1
+			body_stack.append(ni)
+
+	if volume <= 1:
+		return  # одиночная клетка и так "плоская" — нечего пересчитывать
+
+	var y_ceiling := maxi(min_y - FLATTEN_RISE_MARGIN, 0)
+
+	# Кэвити: (EMPTY + id), BFS от клеток тела, вверх не выше y_ceiling.
+	# Отдельный visited — тело уже видело только клетки id, а кэвити должна
+	# знать и про пустые соседи, которые формируют "стены" по факту их
+	# отсутствия (сосед НЕ входит в кэвити -> он либо SOLID/POWDER/другая
+	# жидкость, либо выше потолка).
+	var cavity_visited := {}
+	var row_cells := {}  # y -> Array[int] (x-координаты)
+	var stack := PackedInt32Array()
+
+	# Заново BFS через (EMPTY+id) от той же стартовой клетки — тело целиком
+	# входит в кэвити (id всегда проходит), плюс раскрывает прилегающую
+	# пустоту.
+	stack.append(start)
+	cavity_visited[start] = true
+	while not stack.is_empty():
+		var i: int = stack[stack.size() - 1]
+		stack.resize(stack.size() - 1)
+		var x := i % width
+		var y := i / width
+		if not row_cells.has(y):
+			row_cells[y] = []
+		row_cells[y].append(x)
+		for off in _NEIGHBOR_OFFSETS:
+			var nx: int = x + off.x
+			var ny: int = y + off.y
+			if not in_bounds(nx, ny) or ny < y_ceiling:
+				continue
+			var ni: int = ny * width + nx
+			if cavity_visited.has(ni):
+				continue
+			var cid := _cells[ni]
+			if cid != EMPTY_ID and cid != id:
+				continue
+			cavity_visited[ni] = true
+			stack.append(ni)
+
+	# Снизу вверх (больший y -> меньший) копим доступную ширину, пока не
+	# наберём volume — остаток "не влезших" клеток строки выше уровня
+	# равновесия остаются EMPTY.
+	var ys: Array = row_cells.keys()
+	ys.sort()
+	ys.reverse()
+	var remaining := volume
+	var fill_set := {}
+	for y in ys:
+		if remaining <= 0:
+			break
+		var xs: Array = row_cells[y]
+		if remaining >= xs.size():
+			for x in xs:
+				fill_set[y * width + x] = true
+			remaining -= xs.size()
+		else:
+			xs.sort()
+			for k in remaining:
+				fill_set[y * width + xs[k]] = true
+			remaining = 0
+
+	# Применяем результат. remaining > 0 здесь означало бы, что кэвити не
+	# хватило места на весь объём (FLATTEN_RISE_MARGIN оказался мал) — при
+	# текущих масштабах уровня (озёра в единицы клеток глубиной) не должно
+	# случаться; если случилось — излишек молча теряется (не панацея, но не
+	# крашит, задокументированный крайний случай).
+	for y in row_cells.keys():
+		var xs: Array = row_cells[y]
+		for x in xs:
+			var i: int = y * width + x
+			var target := id if fill_set.has(i) else EMPTY_ID
+			if _cells[i] != target:
+				_set_cell_raw(i, target)
+				_aux[i] = 0
+			# Вся кэвити (не только исходное тело) помечается visited В ОБЩЕМ
+			# массиве flatten_liquid_bodies — иначе внешний цикл наткнётся на
+			# свежие клетки воды, которые тело обрело только что (были EMPTY,
+			# стали id), сочтёт их НОВЫМ телом и продолжит оттуда BFS — а тот
+			# упрётся в уже visited-клетки исходного тела как в стену и найдёт
+			# только ЧАСТЬ связного озера. Раньше это дробило одно тело на три
+			# и теряло массу — поймано тестом, не в теории.
+			visited[i] = 1

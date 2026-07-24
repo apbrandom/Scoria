@@ -64,6 +64,11 @@ func _ready() -> void:
 	_test_large_water_volume_settles_without_jitter()
 	_test_water_escapes_slope_footprint()
 	_test_isolated_water_drop_settles_instantly()
+	# --- "спящее тело": флуд-филл + мгновенный пересчёт вместо потиковой сходимости ---
+	_test_flatten_liquid_body_instant_and_flat()
+	_test_flatten_liquid_body_deterministic()
+	_test_flatten_preserves_already_flat_body()
+	_test_flatten_ignores_non_liquid()
 	print("\n=== ИТОГ: %d пройдено, %d провалено ===" % [_pass, _fail])
 	get_tree().quit(1 if _fail > 0 else 0)
 
@@ -644,3 +649,116 @@ func _test_isolated_water_drop_settles_instantly() -> void:
 	_check("одинокая капля оседает мгновенно (не дрожит)", t == 0, "тиков %d" % t)
 	_check("одинокая капля осталась на месте", sim.get_cell(10, 7) == WATER_ID,
 		"клетка (10,7) = %d (ожидали %d)" % [sim.get_cell(10, 7), WATER_ID])
+
+
+## "Спящее тело" (flatten_liquid_bodies): реализация идеи заказчика — связное
+## тело воды пересчитывается в идеально плоский уровень ОДНИМ проходом
+## (флуд-филл + объём/ширина), а не потиковой сходимостью локальной диффузии.
+## Наливаем воду явно НЕ плоским узким столбиком (40x... клеток, вода НЕ
+## касается дна пола на всю ширину контейнера) — без единого step(), сразу
+## flatten_liquid_bodies() — и проверяем: (1) вода реально растеклась на всю
+## ширину контейнера (а не осталась узким столбиком), (2) масса не потерялась,
+## (3) поверхность идеально плоская (одна и та же верхняя граница у каждой
+## занятой колонки — контейнер и объём подобраны так, чтобы делиться без
+## остатка, иначе последняя частичная строка законно даёт разную высоту).
+func _test_flatten_liquid_body_instant_and_flat() -> void:
+	var sim: Object = SAND_SIM.new()
+	sim.setup(40, 30, _materials())
+	sim.fill_rect(0, 29, 40, 1, STONE_ID)   # пол
+	sim.fill_rect(0, 5, 1, 25, STONE_ID)    # левая стена
+	sim.fill_rect(39, 5, 1, 25, STONE_ID)   # правая стена
+	# внутренняя ширина контейнера — x=1..38 (38 колонок); столбик 4x19=76
+	# клеток -> 76 / 38 = ровно 2 полных строки, без остатка.
+	sim.fill_rect(18, 10, 4, 19, WATER_ID)
+	var mass0: int = sim.count_material(WATER_ID)
+	var bb_before := _bbox(sim, WATER_ID)
+
+	var bodies: int = sim.flatten_liquid_bodies()
+
+	_check("flatten нашёл ровно одно тело", bodies == 1, "тел=%d" % bodies)
+	_check("масса воды сохранена после мгновенного выравнивания",
+		sim.count_material(WATER_ID) == mass0,
+		"было %d, стало %d" % [mass0, sim.count_material(WATER_ID)])
+
+	var bb_after := _bbox(sim, WATER_ID)
+	var width_before: int = bb_before[1] - bb_before[0]
+	var width_after: int = bb_after[1] - bb_after[0]
+	_check("вода реально растеклась на всю ширину контейнера (не осталась столбиком)",
+		width_after > width_before and width_after == 37,
+		"было ширина %d, стало %d (ожидали 37 = 38 колонок - 1)" % [width_before, width_after])
+
+	var top_ys := {}
+	for x in range(bb_after[0], bb_after[1] + 1):
+		for y in range(sim.height):
+			if sim.get_cell(x, y) == WATER_ID:
+				top_ys[x] = y
+				break
+	var tops: Array = top_ys.values()
+	var first_top = tops[0] if tops.size() > 0 else -1
+	var flat := true
+	for t in tops:
+		if t != first_top:
+			flat = false
+			break
+	_check("поверхность идеально плоская (верхняя граница одинакова у всех колонок)",
+		flat, "верхние границы по колонкам: %s" % [tops])
+
+
+## Тот же старт из двух независимых симуляций -> побитово равный результат
+## после flatten_liquid_bodies() — тот же инвариант детерминизма, что и у
+## остального файла (нужен для будущего сетевого replay).
+func _test_flatten_liquid_body_deterministic() -> void:
+	var sim_a: Object = SAND_SIM.new()
+	sim_a.setup(40, 30, _materials())
+	sim_a.fill_rect(0, 29, 40, 1, STONE_ID)
+	sim_a.fill_rect(0, 5, 1, 25, STONE_ID)
+	sim_a.fill_rect(39, 5, 1, 25, STONE_ID)
+	sim_a.fill_rect(18, 10, 4, 19, WATER_ID)
+	sim_a.flatten_liquid_bodies()
+
+	var sim_b: Object = SAND_SIM.new()
+	sim_b.setup(40, 30, _materials())
+	sim_b.fill_rect(0, 29, 40, 1, STONE_ID)
+	sim_b.fill_rect(0, 5, 1, 25, STONE_ID)
+	sim_b.fill_rect(39, 5, 1, 25, STONE_ID)
+	sim_b.fill_rect(18, 10, 4, 19, WATER_ID)
+	sim_b.flatten_liquid_bodies()
+
+	_check("flatten детерминирован (два прогона дают побитово равный хеш)",
+		sim_a.grid_hash() == sim_b.grid_hash(),
+		"hashA=%d hashB=%d" % [sim_a.grid_hash(), sim_b.grid_hash()])
+
+
+## Тело, которое уже в РЕАЛЬНОМ равновесии — лежит прямо на полу И уже
+## занимает всю ширину контейнера (некуда падать, некуда шире растекаться) —
+## не должно измениться от flatten: идемпотентность, "спящее тело" не должно
+## вносить дрожь в уже правильную форму. Важно: просто "один плоский ряд" НЕ
+## значит "равновесие" — если под ним есть открытая пустота до пола (как в
+## первой версии этого теста), это ЗАКОННО не равновесие, и flatten обязан
+## его туда досадить — это не баг, это и есть смысл функции.
+func _test_flatten_preserves_already_flat_body() -> void:
+	var sim: Object = SAND_SIM.new()
+	sim.setup(30, 20, _materials())
+	sim.fill_rect(0, 19, 30, 1, STONE_ID)  # пол на y=19
+	sim.fill_rect(0, 5, 1, 15, STONE_ID)   # левая стена
+	sim.fill_rect(29, 5, 1, 15, STONE_ID)  # правая стена
+	sim.fill_rect(1, 18, 28, 1, WATER_ID)  # ряд ВПРИТЫК к полу, во всю ширину (x=1..28)
+	var before_hash: int = sim.grid_hash()
+
+	var bodies: int = sim.flatten_liquid_bodies()
+
+	_check("flatten не трогает тело в реальном равновесии (хеш не изменился)",
+		sim.grid_hash() == before_hash, "тел обработано=%d" % bodies)
+
+
+## flatten_liquid_bodies() на поле без единой жидкости — 0 тел, не падает.
+func _test_flatten_ignores_non_liquid() -> void:
+	var sim: Object = SAND_SIM.new()
+	sim.setup(20, 15, _materials())
+	sim.fill_rect(0, 14, 20, 1, STONE_ID)
+	sim.fill_rect(5, 5, 5, 8, SAND_ID)
+
+	var bodies: int = sim.flatten_liquid_bodies()
+
+	_check("flatten без жидкости в поле обрабатывает 0 тел (не падает)", bodies == 0,
+		"тел=%d" % bodies)

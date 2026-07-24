@@ -64,6 +64,16 @@ static func generate(size: Vector2i, rng_seed: int, palette: TerrainPalette) -> 
 		sim.step()
 		ticks += 1
 
+	# "Спящее тело" (SandSim.flatten_liquid_bodies, devlog §43) — флуд-филл +
+	# мгновенный пересчёт объёма ВМЕСТО того, чтобы полагаться на то, что
+	# локальная диффузия САМА дойдёт до плоского уровня за MAX_SETTLE_TICKS.
+	# Озеро может числиться "осевшим" (is_active()==false, дребезга нет), но
+	# оставаться холмом — потиковая сходимость к идеальной плоскости для
+	# большого объёма требует значительно больше тиков, чем оседание вообще
+	# (devlog §36-38). Один явный проход здесь решает это без изменения
+	# бюджета MAX_SETTLE_TICKS.
+	sim.flatten_liquid_bodies()
+
 	return _bake_images(sim, grid_w, grid_h, size, palette, rng_seed)
 
 
