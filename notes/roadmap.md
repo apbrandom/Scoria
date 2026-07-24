@@ -236,4 +236,7 @@
   - [ ] Спавн кораблей с владением через `MultiplayerSpawner` — нужен, чтобы
         завести сетевые корабли в настоящий `level.tscn`, а не только в
         `net_playground`.
-  - [ ] Steam-пир (`SteamMultiplayerPeer`, GodotSteam) за тем же интерфейсом.
+  - [ ] Steam-пир (`SteamMultiplayerPeer`, GodotSteam) за тем же интерфейсом —
+        заметки и ссылка на туториал в `architecture.md` → "Steam-пир
+        (GodotSteam SteamMultiplayerPeer)". Публикация в Steam для теста НЕ
+        нужна (тестовый App ID 480 "Spacewar" от Valve).
