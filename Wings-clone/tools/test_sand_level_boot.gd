@@ -1,8 +1,9 @@
-## Headless-проверка: level.tscn реально загружается с GameRules.use_sand_level
-## (режим "Открытый ландшафт" из главного меню) — не только сам генератор
-## изолированно (см. test_sand_level_gen.gd), а весь путь целиком: Terrain
-## принимает картинки от SandLevelGen, MatchManager находит место спавна,
-## корабль реально появляется на сцене.
+## Headless-проверка: level.tscn (единственный игровой уровень, открывается и
+## "Один игрок", и "Два игрока" из главного меню) реально грузится с рельефом
+## от SandLevelGen — не только сам генератор изолированно (см.
+## test_sand_level_gen.gd), а весь путь целиком: Terrain принимает картинки от
+## SandLevelGen, MatchManager находит место спавна, корабль реально
+## появляется на сцене.
 ##
 ## Запуск: godot --headless --path Wings-clone res://tools/test_sand_level_boot.tscn
 extends Node
@@ -14,7 +15,7 @@ var _fail := 0
 
 
 func _ready() -> void:
-	print("=== Проверка загрузки level.tscn с use_sand_level (%s) ===" % DisplayServer.get_name())
+	print("=== Проверка загрузки level.tscn (SandLevelGen, %s) ===" % DisplayServer.get_name())
 	_run()
 	print("\n=== ИТОГ: %d пройдено, %d провалено ===" % [_pass, _fail])
 	get_tree().quit(1 if _fail > 0 else 0)
@@ -30,12 +31,7 @@ func _check(title: String, ok: bool, detail := "") -> void:
 
 func _run() -> void:
 	GameRules.reset()
-	# Тот же путь, что и настоящее меню (main_menu.gd::_set_sand_level) —
-	# player_count и use_sand_level всегда ставятся ВМЕСТЕ, поэтому и тест
-	# должен воспроизводить пару, а не один флаг (иначе проверяет вымышленное
-	# состояние, которого в реальной игре никогда не бывает).
 	GameRules.player_count = 1
-	GameRules.use_sand_level = true
 
 	# Level._ready() выполняется целиком СИНХРОННО внутри add_child (см. тот же
 	# довод в test_menu.gd) — рельеф загружен и корабль заспавнен уже здесь.

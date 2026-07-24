@@ -77,11 +77,6 @@ layout_mode = 2
 custom_minimum_size = Vector2(300, 48)
 text = "По сети"
 
-[node name="SandLevel" type="Button" parent="Center/Root/ModeButtons"]
-layout_mode = 2
-custom_minimum_size = Vector2(300, 48)
-text = "Открытый ландшафт (SandSim)"
-
 [node name="Back" type="Button" parent="Center/Root/ModeButtons"]
 layout_mode = 2
 custom_minimum_size = Vector2(300, 48)
@@ -121,7 +116,6 @@ text = "Назад"
 [connection signal="pressed" from="Center/Root/ModeButtons/Single" to="." method="_on_single_pressed"]
 [connection signal="pressed" from="Center/Root/ModeButtons/LocalTwo" to="." method="_on_local_two_pressed"]
 [connection signal="pressed" from="Center/Root/ModeButtons/Network" to="." method="_on_network_pressed"]
-[connection signal="pressed" from="Center/Root/ModeButtons/SandLevel" to="." method="_on_sand_level_pressed"]
 [connection signal="pressed" from="Center/Root/ModeButtons/Back" to="." method="_on_back_pressed"]
 [connection signal="pressed" from="Center/Root/NetButtons/Host" to="." method="_on_host_pressed"]
 [connection signal="pressed" from="Center/Root/NetButtons/Join" to="." method="_on_join_pressed"]

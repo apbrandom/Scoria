@@ -53,16 +53,6 @@ var kills_per_level: int = 10
 ## один локальный + один по сети).
 var player_count: int = 2
 
-## Открыть level.tscn с рельефом из SandLevelGen (процедурный ландшафт —
-## земля/песок/вода, осевший ОДИН РАЗ при генерации через настоящую SandSim,
-## не живая симуляция в кадре полёта — notes/terrain_research.md, "статичный
-## старт") вместо обычной статичной пары levels/test/visual+mask.png. Меню
-## выставляет это ПЕРЕД change_scene_to_file(level.tscn), тот же паттерн, что
-## player_count. Другие пункты меню ("Один игрок"/"Два игрока") обязаны
-## сбрасывать флаг в false — иначе выбор "Открытый ландшафт" один раз протёк
-## бы во все последующие заходы в level.tscn за эту сессию игры.
-var use_sand_level: bool = false
-
 ## Какую роль занять в net_playground.gd: "auto" (гонка за bind порта — как
 ## было раньше, годится для .command-файла/прямого запуска сцены в обход
 ## меню), "host" или "join" (форс, ставит меню кнопками «Создать игру»/
@@ -89,6 +79,5 @@ func reset() -> void:
 	reload_time_scale = 1.0
 	kills_per_level = 10
 	player_count = 2
-	use_sand_level = false
 	net_forced_role = "auto"
 	parallax_enabled = true
