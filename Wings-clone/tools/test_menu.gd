@@ -82,6 +82,16 @@ func _run() -> void:
 	_check("Вдвоём -> GameRules.player_count = 2", GameRules.player_count == 2,
 		"player_count=%d" % GameRules.player_count)
 
+	menu._set_sand_level()
+	_check("Открытый ландшафт -> GameRules.use_sand_level = true", GameRules.use_sand_level,
+		"use_sand_level=%s" % GameRules.use_sand_level)
+	_check("Открытый ландшафт -> тоже сольный полёт (player_count = 1)",
+		GameRules.player_count == 1, "player_count=%d" % GameRules.player_count)
+
+	menu._set_local_two_player()
+	_check("Вдвоём после Ландшафта -> сбрасывает use_sand_level в false",
+		not GameRules.use_sand_level, "use_sand_level=%s" % GameRules.use_sand_level)
+
 	menu._set_host_role()
 	_check("Хост -> GameRules.net_forced_role = \"host\"", GameRules.net_forced_role == "host",
 		"net_forced_role=%s" % GameRules.net_forced_role)

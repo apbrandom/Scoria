@@ -42,8 +42,15 @@ const MATCH_MANAGER_SCRIPT := preload("res://scripts/match/match_manager.gd")
 ## class_name может не резолвиться headless-запуском до пересканирования кэша).
 const GLOW_ENV_SCRIPT := preload("res://scripts/level/glow_environment.gd")
 const HUD_LABEL_SCRIPT := preload("res://scripts/level/hud_label.gd")
+## preload по пути — та же причина, что у остальных SCRIPT-констант выше
+## (свежий class_name может не резолвиться headless-запуском до пересборки кэша).
+const SAND_LEVEL_GEN_SCRIPT := preload("res://scripts/level/sand_level_gen.gd")
 const FALLBACK_SIZE := Vector2i(1200, 1200)
 const FALLBACK_SEED := 1337
+## Размер уровня для GameRules.use_sand_level (шире и площе FALLBACK_SIZE —
+## "много открытого пространства" заказчика ложится лучше на широкий экран,
+## чем на квадрат).
+const SAND_LEVEL_SIZE := Vector2i(1800, 900)
 const MENU_SCENE := "res://scenes/menu/main_menu.tscn"
 
 ## Камера кадрирует ОБА корабля: зажимаем зум сверху/снизу и оставляем запас
@@ -75,12 +82,23 @@ func _ready() -> void:
 		push_error("Не загрузилась палитра " + PALETTE_PATH)
 		return
 
-	var vis := LevelImageLoader.load_image(VISUAL_PATH)
-	var msk := LevelImageLoader.load_image(MASK_PATH)
-	if vis == null:
-		var lvl := TestLevelGen.generate(FALLBACK_SIZE, FALLBACK_SEED, _palette)
+	var vis: Image
+	var msk: Image
+	if GameRules.use_sand_level:
+		# "Открытый ландшафт" из главного меню — рельеф не нарисован вручную и
+		# не сгенерирован шумом (TestLevelGen), а осел ОДИН РАЗ через
+		# настоящую SandSim при заходе в уровень (статичный старт, не живая
+		# симуляция в кадре полёта — notes/terrain_research.md).
+		var lvl := SAND_LEVEL_GEN_SCRIPT.generate(SAND_LEVEL_SIZE, FALLBACK_SEED, _palette)
 		vis = lvl["visual"]
 		msk = lvl["mask"]
+	else:
+		vis = LevelImageLoader.load_image(VISUAL_PATH)
+		msk = LevelImageLoader.load_image(MASK_PATH)
+		if vis == null:
+			var lvl := TestLevelGen.generate(FALLBACK_SIZE, FALLBACK_SEED, _palette)
+			vis = lvl["visual"]
+			msk = lvl["mask"]
 
 	_terrain = Terrain.new()
 	_terrain.palette = _palette

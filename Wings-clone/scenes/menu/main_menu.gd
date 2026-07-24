@@ -49,6 +49,11 @@ func _on_local_two_pressed() -> void:
 	get_tree().change_scene_to_file(LEVEL_SCENE)
 
 
+func _on_sand_level_pressed() -> void:
+	_set_sand_level()
+	get_tree().change_scene_to_file(LEVEL_SCENE)
+
+
 func _on_network_pressed() -> void:
 	_show_net()
 
@@ -77,10 +82,22 @@ func _on_join_pressed() -> void:
 ## тест "в лоб" через сами _on_*_pressed.
 func _set_single_player() -> void:
 	GameRules.player_count = 1
+	GameRules.use_sand_level = false
 
 
 func _set_local_two_player() -> void:
 	GameRules.player_count = 2
+	GameRules.use_sand_level = false
+
+
+## "Открытый ландшафт" — рельеф из процедурного SandLevelGen (земля/песок/
+## вода, см. scripts/level/sand_level_gen.gd) вместо статичной пары
+## levels/test/visual+mask.png. Сольный полёт (player_count=1) — тот же режим
+## демонстрации ландшафта, что и обычный "Один игрок", разница только в
+## источнике рельефа.
+func _set_sand_level() -> void:
+	GameRules.player_count = 1
+	GameRules.use_sand_level = true
 
 
 func _set_host_role() -> void:
