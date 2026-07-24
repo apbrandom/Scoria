@@ -64,7 +64,7 @@ static func generate(size: Vector2i, rng_seed: int, palette: TerrainPalette) -> 
 		sim.step()
 		ticks += 1
 
-	return _bake_images(sim, grid_w, grid_h, size, palette)
+	return _bake_images(sim, grid_w, grid_h, size, palette, rng_seed)
 
 
 ## Насыпает исходную форму ДО первого step(): холмистая поверхность (шум) —
@@ -141,14 +141,33 @@ static func _cls_of(sand_id: int) -> int:
 		_: return TerrainPalette.Cls.EMPTY
 
 
+## Мелкая шумовая вариация цвета ВНУТРИ клетки — без неё блок CELL_PX×CELL_PX
+## однотонный, и граница клеток читается как ровная сетка ("пиксель-арт"),
+## что прямо противоречит заявленному HD-стилю проекта (CLAUDE.md). Тот же
+## приём, что уже в TestLevelGen: один вызов FastNoiseLite.get_image() на весь
+## холст (дёшево, С++), не get_noise_2d() на каждый пиксель (дорого в GDScript).
+static func _detail_noise_bytes(rng_seed: int, size: Vector2i) -> PackedByteArray:
+	var n := FastNoiseLite.new()
+	n.seed = rng_seed
+	n.frequency = 0.15
+	n.fractal_octaves = 1
+	# FORMAT_L8, значения нормализованы в 0..255 (128 ~ ноль исходного шума)
+	return n.get_image(size.x, size.y, false, false, true).get_data()
+
+
 ## Разворачивает осевшую сетку SandSim в пиксельные Image (visual+mask) в
-## разрешении output_size — каждая клетка становится блоком CELL_PX×CELL_PX.
+## разрешении output_size — каждая клетка становится блоком CELL_PX×CELL_PX,
+## но цвет пикселя внутри блока модулируется шумом (см. _detail_noise_bytes),
+## не одна плоская заливка на весь блок.
 static func _bake_images(sim, grid_w: int, grid_h: int, output_size: Vector2i,
-		palette: TerrainPalette) -> Dictionary:
+		palette: TerrainPalette, rng_seed: int) -> Dictionary:
 	var w := output_size.x
 	var h := output_size.y
 	var vis := PackedByteArray(); vis.resize(w * h * 4)
 	var msk := PackedByteArray(); msk.resize(w * h * 4)
+	# +7 — отдельная соль от seed, который уже занят height_noise (rng_seed) и
+	# patch_noise (rng_seed+1) в _carve_initial_terrain — не тот же узор шума.
+	var detail := _detail_noise_bytes(rng_seed + 7, output_size)
 
 	var mr := PackedByteArray(); mr.resize(TerrainPalette.CLASS_COUNT)
 	var mg := PackedByteArray(); mg.resize(TerrainPalette.CLASS_COUNT)
@@ -170,27 +189,40 @@ static func _bake_images(sim, grid_w: int, grid_h: int, output_size: Vector2i,
 			if block_w <= 0:
 				continue
 			var cls := _cls_of(sim.get_cell(gx, gy))
-			var r := 0
-			var g := 0
-			var b := 0
-			var a := 255
-			match cls:
-				TerrainPalette.Cls.EMPTY:
-					a = 0
-				TerrainPalette.Cls.WATER:
-					r = 24; g = 60; b = 190; a = 190
-				TerrainPalette.Cls.INDESTRUCTIBLE:
-					r = 120; g = 120; b = 128
-				TerrainPalette.Cls.SOFT:
-					r = 214; g = 186; b = 122  # песок — светлый тёплый
-				_:  # NORMAL — земля
-					r = 122; g = 82; b = 46
+			var a := 0 if cls == TerrainPalette.Cls.EMPTY else (190 if cls == TerrainPalette.Cls.WATER else 255)
+			var mask_r: int = mr[cls]
+			var mask_g: int = mg[cls]
+			var mask_b: int = mb[cls]
 			for oy in block_h:
 				var row := (py0 + oy) * w
 				for ox in block_w:
-					var o := (row + px0 + ox) * 4
-					vis[o] = r; vis[o + 1] = g; vis[o + 2] = b; vis[o + 3] = a
-					msk[o] = mr[cls]; msk[o + 1] = mg[cls]; msk[o + 2] = mb[cls]; msk[o + 3] = 255
+					var pi := row + px0 + ox
+					var r := 0
+					var g := 0
+					var b := 0
+					match cls:
+						TerrainPalette.Cls.EMPTY:
+							pass
+						TerrainPalette.Cls.WATER:
+							# Вода — без зернистого шума (это не сыпучий материал,
+							# ровная гладь физически уместнее, как и в TestLevelGen).
+							r = 24; g = 60; b = 190
+						TerrainPalette.Cls.INDESTRUCTIBLE:
+							var d := detail[pi] - 128
+							var t := 120 + (d >> 3)
+							r = t; g = t; b = t + 6
+						TerrainPalette.Cls.SOFT:
+							var d := detail[pi] - 128  # песок — светлый тёплый
+							r = 214 + (d >> 3); g = 186 + (d >> 3); b = 122 + (d >> 4)
+						_:  # NORMAL — земля, тёмный тёплый
+							var d := detail[pi] - 128
+							r = 122 + (d >> 2); g = 82 + (d >> 3); b = 46 + (d >> 4)
+					var o := pi * 4
+					vis[o] = clampi(r, 0, 255)
+					vis[o + 1] = clampi(g, 0, 255)
+					vis[o + 2] = clampi(b, 0, 255)
+					vis[o + 3] = a
+					msk[o] = mask_r; msk[o + 1] = mask_g; msk[o + 2] = mask_b; msk[o + 3] = 255
 
 	return {
 		"visual": Image.create_from_data(w, h, false, Image.FORMAT_RGBA8, vis),
