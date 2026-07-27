@@ -73,6 +73,10 @@ func _run() -> void:
 	await _step(1)
 	var m := _make_match([a, b])
 
+	_check("счёт стартует с нуля для обоих игроков", m.get_score(a) == 0 and m.get_score(b) == 0, "счёт a=%d, b=%d" % [m.get_score(a), m.get_score(b)])
+	_check("матч не закончен сразу после setup", not m.is_match_over(), "is_match_over()=%s" % str(m.is_match_over()))
+	_check("победитель не определён сразу после setup", m.winner() == null, "winner()=%s" % str(m.winner()))
+
 	var exp: Explosion = EXPLOSION_SCENE.instantiate()
 	exp.global_position = b.global_position
 	exp.blast_radius = 60.0   # 60 < 200 (дистанция до a) — задевает только b
