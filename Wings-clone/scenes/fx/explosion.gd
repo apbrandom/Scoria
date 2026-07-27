@@ -34,7 +34,16 @@ func _carve_terrain() -> void:
 	if terrain_power <= 0.0:
 		return
 	var terrain := get_tree().get_first_node_in_group("terrain") as Node2D
-	if terrain == null or not terrain.has_method("carve_circle"):
+	if terrain == null:
+		# Нормальная ситуация: рельефа нет в сцене (например, в tools/-сценах)
+		# — ничего не делаем, без предупреждения.
+		return
+	if not terrain.has_method("carve_circle"):
+		# В группе "terrain" нашёлся узел, но у него нет метода carve_circle.
+		# Это ошибка: вероятно опечатка в имени метода где-то в коде или
+		# в группу попал не тот узел. Предупреждаем, чтобы легко отловить
+		# при рефакторинге.
+		push_warning("В группе 'terrain' найден узел '%s', но у него нет метода 'carve_circle'" % terrain.name)
 		return
 	# Terrain не обязан стоять в (0,0) сцены (например, в будущей level.tscn) —
 	# переводим глобальные координаты взрыва в его локальные пиксели явно,
