@@ -28,9 +28,10 @@
 ##
 ## Управление в ОБОИХ окнах — экшены p1_* (project.godot): ← → поворот, ↑ тяга.
 ## Оружие сознательно НЕ выдано (primary/secondary_weapon не заданы) — эта
-## песочница проверяет ТОЛЬКО позицию/aim_angle (devlog §25); стрельба и попадания
-## по сети ещё не реплицируются, поэтому здесь её и нет, чтобы не создавать
-## впечатление сломанной механики там, где механики попросту ещё нет.
+## песочница проверяет ТОЛЬКО позицию/aim_angle (devlog §25). Carve рельефа
+## теперь реплицируется (TerrainNetSync, ниже), но урон кораблю/счёт/спавн
+## снарядов по сети — нет, поэтому оружия здесь по-прежнему нет: не создавать
+## впечатление сломанной механики там, где остальная часть механики ещё не готова.
 ## ESC — назад в главное меню.
 ##
 ## Сознательно НЕ MatchManager и НЕ меню (это будущие roadmap-шаги — devlog §25.6,
@@ -41,10 +42,11 @@
 ## tools/test_net_input.gd, только здесь он впервые подключён к настоящему Ship
 ## в настоящей игре, а не к голому ShipInput в тесте.
 ##
-## Спавн — на ФИКСИРОВАННЫХ координатах в открытом небе, НЕ через
-## Terrain.find_clear_spawn(): та карвит рельеф своим локальным RNG — у хоста и
-## клиента вышли бы РАЗНЫЕ вырезы на, казалось бы, одинаковой картинке (carve по
-## сети ещё не реализован — roadmap, следующий шаг после этого).
+## Спавн — по-прежнему на ФИКСИРОВАННЫХ координатах в открытом небе, не через
+## Terrain.find_clear_spawn(): carve теперь реплицируется (TerrainNetSync, ниже),
+## так что расхождения хост/клиент это само по себе больше не вызвало бы — но
+## сама эта песочница осталась минимальной (без оружия, без MatchManager), менять
+## способ спавна здесь не входит в задачу репликации carve, отдельное решение.
 extends Node2D
 
 const PALETTE_PATH := "res://data/terrain/wings_classes.tres"
@@ -58,6 +60,7 @@ const SHIP_DATA := preload("res://data/ships/normal.tres")
 ## до пересканирования кэша (та же грабля, что уже ловилась на TerrainDebris).
 const GLOW_ENV_SCRIPT := preload("res://scripts/level/glow_environment.gd")
 const HUD_LABEL_SCRIPT := preload("res://scripts/level/hud_label.gd")
+const TERRAIN_NET_SYNC_SCRIPT := preload("res://scripts/net/terrain_net_sync.gd")
 const MENU_SCENE := "res://scenes/menu/main_menu.tscn"
 
 ## Открытое небо у верхнего края карты — безопасно и без карва при любом
@@ -95,6 +98,12 @@ func _ready() -> void:
 	add_child(_terrain)
 	_terrain.load_level(vis, msk)
 	_terrain.add_to_group("terrain")
+	# Имя фиксировано ("NetSync") — RPC матчит узел по пути, он обязан совпасть
+	# на хосте и клиенте (тот же приём, что и ShipInputSync/NetSync в ship.tscn).
+	var terrain_sync := TERRAIN_NET_SYNC_SCRIPT.new()
+	terrain_sync.name = "NetSync"
+	_terrain.add_child(terrain_sync)
+	terrain_sync.terrain = _terrain
 
 	_net = NetworkManager.new()
 	add_child(_net)

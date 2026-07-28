@@ -24,12 +24,14 @@ extends Node2D
 const TerrainDebrisScript := preload("res://scenes/fx/terrain_debris.gd")
 const TerrainDustScript := preload("res://scenes/fx/terrain_dust.gd")
 
-## Пока без подписчиков в коде — заранее заведённый семантический шов для
-## будущей сетевой репликации carve по reliable_ordered @rpc (roadmap.md:
-## «Carve рельефа по @rpc + локальный детерминированный replay»): у хоста
-## этот сигнал станет источником события "что разослать", а не поводом для
-## нового способа узнавать о разрушении.
-signal carved(area: Rect2i)
+## Источник события для сетевой репликации carve (scripts/net/terrain_net_sync.gd,
+## reliable_ordered @rpc): center/radius — ИСХОДНЫЕ параметры вызова carve_circle,
+## не производные от area. Нужны именно они, а не area, потому что реплей на
+## клиенте — это повторный вызов carve_circle(center, radius) (тот же детерминизм
+## edge-шума и carve_scale по классу материала), а area (уже посчитанный bounding
+## box с учётом max_scale/edge_noise_amplitude) для этого не годится — восстановить
+## из неё исходные center/radius обратно нельзя однозначно.
+signal carved(center: Vector2i, radius: int, area: Rect2i)
 
 @export var palette: TerrainPalette
 
@@ -288,7 +290,8 @@ func is_solid_at(p: Vector2i) -> bool:
 
 ## Ленивая инициализация детерминированного шума края воронки (см. _edge_noise).
 ## seed фиксирован константой, а не Godot-рандомом — тот же center должен давать
-## тот же неровный край каждый раз (важно для будущего сетевого replay carve).
+## тот же неровный край каждый раз (важно для сетевого replay carve —
+## scripts/net/terrain_net_sync.gd).
 func _get_edge_noise() -> FastNoiseLite:
 	if _edge_noise == null:
 		_edge_noise = FastNoiseLite.new()
@@ -421,7 +424,7 @@ func carve_circle(center: Vector2i, radius: int) -> int:
 				_dirty[ci] = true
 
 	if changed > 0:
-		carved.emit(Rect2i(x0, y0, x1 - x0 + 1, y1 - y0 + 1))
+		carved.emit(center, radius, Rect2i(x0, y0, x1 - x0 + 1, y1 - y0 + 1))
 		# immediate_rebuild пересобирает коллизию сразу — но менять форму StaticBody
 		# НЕЛЬЗЯ во время флаша физических запросов (внутри _integrate_forces,
 		# body_entered, area-колбэков): Godot роняет "Can't change state while
@@ -432,6 +435,106 @@ func carve_circle(center: Vector2i, radius: int) -> int:
 		# Инвариант: форма коллизии рельефа никогда не меняется внутри флаша запросов.
 		if immediate_rebuild and not Engine.is_in_physics_frame():
 			flush_dirty()
+	return changed
+
+
+## Закрашивает прямоугольник рельефа ОДНИМ классом материала — точка входа для
+## внешнего источника, который сам решает, из чего состоит рельеф (сейчас это
+## живая клеточная симуляция, scripts/level/live_sand.gd: одна клетка SandSim =
+## один такой блок cell_px×cell_px).
+##
+## Почему отдельный метод, а не carve_circle: carve умеет ровно одно — СТИРАТЬ
+## разрушаемое в пустоту, и намеренно не может ни поставить материал обратно,
+## ни поменять один материал на другой (песок съехал на место земли). Осыпающийся
+## рельеф требует именно записи произвольного класса в произвольное место.
+##
+## rgba_bytes — цвета пикселей блока (w*h*4, построчно от rect.position).
+## Вызывающий обязан красить тем же правилом, каким этот материал был запечён при
+## генерации (SandLevelGen.color_of) — иначе осыпавшаяся земля будет отличаться
+## по цвету от нетронутой и обвал будет читаться как заплатка.
+##
+## Сигнал `carved` НЕ шлётся сознательно: он существует для сетевой репликации
+## разрушения событием (scripts/net/terrain_net_sync.gd, «хост прислал carve —
+## повтори его у себя»). У живой симуляции модель репликации другая: и хост, и
+## клиент детерминированно тикают СВОЮ копию SandSim, поэтому пересылать каждый
+## сдвинувшийся пиксель не нужно и вредно (это был бы поток на весь экран вместо
+## редких событий). Слать отсюда `carved` означало бы реплеить на клиенте carve,
+## которого не было.
+##
+## Возвращает число реально изменившихся пикселей (0 — блок уже был таким).
+func write_block(rect: Rect2i, cls: int, rgba_bytes: PackedByteArray) -> int:
+	var x0 := maxi(rect.position.x, 0)
+	var y0 := maxi(rect.position.y, 0)
+	var x1 := mini(rect.position.x + rect.size.x - 1, size.x - 1)
+	var y1 := mini(rect.position.y + rect.size.y - 1, size.y - 1)
+	if x1 < x0 or y1 < y0:
+		return 0
+
+	var is_solid := TerrainPalette.SOLID[cls] != 0
+	var changed := 0
+	var cx0 := x0 / chunk_size
+	var cx1 := x1 / chunk_size
+	var cy0 := y0 / chunk_size
+	var cy1 := y1 / chunk_size
+
+	for cy in range(cy0, cy1 + 1):
+		for cx in range(cx0, cx1 + 1):
+			var ci := cy * _cols + cx
+			var chunk: TerrainChunk = _chunks[ci]
+			var ox := cx * chunk_size
+			var oy := cy * chunk_size
+			var lx0 := maxi(x0 - ox, 0)
+			var lx1 := mini(x1 - ox, chunk.cw - 1)
+			var ly0 := maxi(y0 - oy, 0)
+			var ly1 := mini(y1 - oy, chunk.ch - 1)
+			if lx1 < lx0 or ly1 < ly0:
+				continue
+
+			# Локальные копии — та же причина, что в carve_circle: индексная
+			# запись в chunk.vis_bytes[...] напрямую копировала бы массив (COW)
+			# на каждый пиксель.
+			var vb := chunk.vis_bytes
+			var sb := chunk.solid_bytes
+			var eb := chunk.empty_bytes
+			var touched := false
+
+			for ly in range(ly0, ly1 + 1):
+				var gy := oy + ly
+				var grow := gy * size.x
+				var crow := ly * chunk.cw
+				var srow := (gy - rect.position.y) * rect.size.x - rect.position.x
+				for lx in range(lx0, lx1 + 1):
+					var gx := ox + lx
+					var gi := grow + gx
+					if _class[gi] == cls:
+						continue  # уже этот материал — не трогаем и не пачкаем чанк
+					_class[gi] = cls
+					var li := crow + lx
+					var si := (srow + gx) * 4
+					vb[li * 4] = rgba_bytes[si]
+					vb[li * 4 + 1] = rgba_bytes[si + 1]
+					vb[li * 4 + 2] = rgba_bytes[si + 2]
+					vb[li * 4 + 3] = rgba_bytes[si + 3]
+					# solid/empty — взаимные инверсии (см. TerrainChunk.empty_bytes).
+					# Пишем оба байта LA8, как это делает load_level: значим
+					# альфа-байт, но держать пару согласованной дешевле, чем потом
+					# гадать, почему маска выглядит иначе, чем после загрузки.
+					var so := li * 2
+					if is_solid:
+						sb[so] = 255; sb[so + 1] = 255
+						eb[so] = 0; eb[so + 1] = 0
+					else:
+						sb[so] = 0; sb[so + 1] = 0
+						eb[so] = 255; eb[so + 1] = 255
+					touched = true
+					changed += 1
+
+			if touched:
+				chunk.vis_bytes = vb
+				chunk.solid_bytes = sb
+				chunk.empty_bytes = eb
+				_dirty[ci] = true
+
 	return changed
 
 

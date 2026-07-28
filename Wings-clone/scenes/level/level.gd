@@ -43,10 +43,8 @@ const HUD_LABEL_SCRIPT := preload("res://scripts/level/hud_label.gd")
 ## preload по пути — та же причина, что у остальных SCRIPT-констант выше
 ## (свежий class_name может не резолвиться headless-запуском до пересборки кэша).
 const SAND_LEVEL_GEN_SCRIPT := preload("res://scripts/level/sand_level_gen.gd")
-## Фиксированный seed — детерминизм важен для будущего сетевого запуска
-## с общим уровнем у хоста и клиента (roadmap.md, "сетевой детерминированный
-## replay").
-const LEVEL_SEED := 1337
+## preload по пути — та же причина, что у остальных SCRIPT-констант выше.
+const LIVE_SAND_SCRIPT := preload("res://scripts/level/live_sand.gd")
 ## Широкий и плоский, не квадрат — "много открытого пространства" ложится
 ## лучше на широкий экран. Замерено (tools/, разово): 1800x900 -> 1.1с,
 ## 2700x1350 -> 2.1с, 5400x2700 -> 4.9с генерации SandLevelGen — рост терпимый
@@ -81,6 +79,9 @@ var _cam: Camera2D
 var _zoom_mult := 1.0
 var _hud: Label
 var _debug: TerrainDebugDraw
+## Живая клеточная физика рельефа (scripts/level/live_sand.gd) — null, если
+## выключена в data/sand/live_sand.tres.
+var _live_sand: Node = null
 
 
 func _ready() -> void:
@@ -96,7 +97,15 @@ func _ready() -> void:
 	# notes/terrain_research.md). Старый путь через levels/test/*.png остался
 	# только у tools/terrain_playground.gd (там он и нужен как неизменный
 	# референс для ручного теста carve) — реальная игра его больше не видит.
-	var lvl := SAND_LEVEL_GEN_SCRIPT.generate(SAND_LEVEL_SIZE, LEVEL_SEED, _palette)
+	# Seed уровня: 0 в GameRules — разыграть новый (каждый матч чуть другой
+	# рельеф), иначе взять заданный. Разыгранное значение кладём обратно в
+	# GameRules.level_seed_used — по нему уровень воспроизводится один в один
+	# (тесты, а в будущем — общий рельеф у хоста и клиента).
+	var requested_seed := GameRules.level_seed
+	if requested_seed == 0:
+		requested_seed = randi_range(1, 0x7FFFFFFF)
+	var lvl := SAND_LEVEL_GEN_SCRIPT.generate(SAND_LEVEL_SIZE, requested_seed, _palette)
+	GameRules.level_seed_used = lvl["seed_used"]
 	var vis: Image = lvl["visual"]
 	var msk: Image = lvl["mask"]
 
@@ -107,6 +116,22 @@ func _ready() -> void:
 	_terrain.load_level(vis, msk)
 	_terrain.add_to_group("terrain")
 	_build_world_bounds(_terrain.size)
+
+	# Живая физика рельефа: та же симуляция, что осела при генерации, не
+	# выбрасывается, а продолжает тикать в кадре (земля осыпается после взрыва).
+	# Узел добавляется ПОСЛЕ load_level — мосту нужен уже собранный Terrain.
+	# Рубильник проверяем ДО setup(): выключенный мост не должен платить за
+	# массив детального шума на весь уровень (несколько мегабайт) и подписку
+	# на carved — иначе "выключено" стоило бы почти как "включено".
+	var live := LIVE_SAND_SCRIPT.new()
+	if live.settings.enabled:
+		live.name = "LiveSand"
+		add_child(live)
+		live.setup(_terrain, lvl["sim"], lvl["grid"],
+			SAND_LEVEL_GEN_SCRIPT.DEFAULT_RULES.cell_px, lvl["seed_used"])
+		_live_sand = live
+	else:
+		live.free()
 
 	_debug = TerrainDebugDraw.new()
 	_debug.terrain = _terrain
@@ -237,8 +262,11 @@ func _update_hud() -> void:
 	if _ships.is_empty():
 		return
 	var lines: Array[String] = []
-	lines.append("FPS %d      уровень %dx%d" % [
-		Engine.get_frames_per_second(), _terrain.size.x, _terrain.size.y])
+	lines.append("FPS %d      уровень %dx%d      seed %d" % [
+		Engine.get_frames_per_second(), _terrain.size.x, _terrain.size.y,
+		GameRules.level_seed_used])
+	if _live_sand != null:
+		lines.append(_live_sand.status_line())
 	for i in _ships.size():
 		var ship := _ships[i]
 		var status := "" if ship.is_alive() else " — уничтожен"
