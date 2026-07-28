@@ -27,9 +27,9 @@
 | Модуль | Владеет (файлы) | Независим? | Жёстко связан с |
 |---|---|---|---|
 | **Полёт и корабль** | `scenes/ship/`, `scripts/input/{ship_input,local_input}.gd`, `resources/ship_data.gd`, `resources/weapon_data.gd`, `scenes/projectiles/*` (поведение) | Да | `GameRules` (множители); зовёт `Terrain.carve()`, но не наоборот |
-| **Рельеф и материалы** | `scenes/level/terrain{,_chunk}.gd`, `resources/terrain_palette.gd`, `notes/terrain_materials.md` | **Нет** | **Сеть** — детерминизм carve, самая тесная связь во всём проекте (§2, неделя 2 `timeline.md`) |
+| **Рельеф и материалы** | `scenes/level/terrain{,_chunk}.gd`, `resources/terrain_palette.gd`, `notes/terrain_materials.md`, `scripts/sand/sand_sim.gd`, `scripts/level/{sand_level_gen,live_sand}.gd`, `resources/{level_gen_rules,live_sand_settings}.gd` | **Нет** | **Сеть** — детерминизм carve, самая тесная связь во всём проекте (§2, неделя 2 `timeline.md`); **GameRules** — `level_seed`/`level_seed_used` (§5) |
 | **Матч и правила** | `scripts/match/match_manager.gd`, `autoload/game_rules.gd` | Частично | `Ship` (слушает `destroyed`), `Terrain` (`pick_spawns` → `find_clear_spawn`) |
-| **Сеть** | будущий `scripts/net/` | Нет, пока не существует | **Рельеф** (обязана совпадать по carve); `Ship` — дёшево, шов `RemoteInput`/`ShipInput` заложен заранее (§2.3) |
+| **Сеть** | `scripts/net/` (`network_manager.gd`, `ship_input_sync.gd`, `terrain_net_sync.gd`), `scripts/input/remote_input.gd` | Нет | **Рельеф** — carve реплицируется событием, реализовано (devlog §48); `Ship` — позиция/угол через `MultiplayerSynchronizer` (devlog §25) |
 | **Боты** | `scripts/input/ai_input.gd` (будущий) | Да | только интерфейс `ShipInput`, ничего больше |
 | **Левел-дизайн / ген. уровней** | `levels/`, будущий генератор по биому/размеру | Почти | потребляет формат `TerrainPalette`, не лезет в carve-логику |
 | **Арт / UI** | `scenes/ui/`, спрайты, HUD | Да | ничего структурно — чистое представление |
@@ -108,7 +108,11 @@ res://
 > (`NetworkManager`, `ShipInputSync`), `scenes/fx/terrain_debris.gd`,
 > `scenes/fx/terrain_dust.gd`. `scenes/ui/hud.tscn` не заведён — HUD везде
 > собирается кодом (`Label` + `CanvasLayer`) прямо в сцене, которой он
-> принадлежит. Актуальный список — `notes/roadmap.md`, а не это дерево;
+> принадлежит. Добавились также (devlog §49) `scripts/sand/sand_sim.gd`
+> (клеточная симуляция falling-sand), `scripts/level/{sand_level_gen,live_sand}.gd`,
+> `resources/{level_gen_rules,live_sand_settings}.gd` с инстансами в
+> `data/level/default_gen.tres` и `data/sand/live_sand.tres` (детали — §3, §4.4-4.5).
+> Актуальный список — `notes/roadmap.md`, а не это дерево;
 > обновлять дерево при каждой мелкой правке не стали — оно фиксирует
 > НАМЕРЕНИЕ на момент проектирования, реальность живёт в коде и devlog.
 
@@ -276,6 +280,24 @@ Terrain (Node2D)
 > 3. Из-за (1) и (2) вместо `CollisionPolygon2D` используется
 >    `ConcavePolygonShape2D` с явным списком отрезков.
 
+> **Живая физика поверх этого (devlog §49, 2026-07-28).** `Terrain` выше
+> по-прежнему единственный рендер+мост коллизии — не заменён и не удалён. Но с
+> §49 источником истины для ДВИЖЕНИЯ материала (что куда осыпалось) стала
+> клеточная симуляция `SandSim` (`scripts/sand/sand_sim.gd`, изначально
+> прототип falling-sand): `scripts/level/live_sand.gd` тикает её в
+> `_physics_process` и переносит изменившиеся клетки в `Terrain` через новый
+> метод `Terrain.write_block(rect, cls, rgba)` (пишет произвольный класс в
+> прямоугольник — `carve_circle` умеет только стирать в EMPTY). Обратная
+> связь — по сигналу `carved`: дыра из carve переносится в симуляцию, чтобы
+> материал над воронкой потерял опору. Оба разрешения разные (рельеф
+> попиксельный, симуляция — клетки `cell_px`, сейчас 6): осыпь квантуется по
+> сетке клеток, мельче клетки carve не роняет пласт (порог
+> `LiveSandSettings.carve_clear_threshold`). Рубильник
+> `LiveSandSettings.enabled` возвращает поведение к статичному рельефу.
+> Генерация уровня (`scripts/level/sand_level_gen.gd`) теперь тоже строится на
+> `SandSim` (была на процедурном шуме `TestLevelGen`) и берёт числа формы
+> уровня из `LevelGenRules` (§4) вместо констант в коде.
+
 **Цикл разрушения:**
 ```
 carve(center, radius, power)
@@ -376,6 +398,33 @@ enum Class { EMPTY, BACKGROUND, WATER, WATER_FLOW_D, WATER_FLOW_L, WATER_FLOW_R,
 > Загрузчик уровня абстрагирован, так что второй источник подключается без правок
 > `Terrain`.
 
+### 4.4 `LevelGenRules` (devlog §49, 2026-07-28)
+```gdscript
+class_name LevelGenRules extends Resource
+
+@export var cell_px: int = 6                      # px рельефа на клетку SandSim
+@export var surface_base_min/max: float           # средняя линия поверхности, доля высоты
+@export var surface_amplitude_min/max: float      # размах холмов
+@export var lake_count_min/max, lake_half_min/max, lake_depth_min/max
+@export var min_open_sky_frac, max_water_frac     # фильтр играбельности
+@export var spawn_clear_radius_px, min_sky_headroom_frac
+@export var max_attempts: int = 12                # сколько seed'ов перебрать
+```
+Диапазоны, из которых `SandLevelGen` детерминированно (`RandomNumberGenerator`
+по seed уровня) разыгрывает конкретную форму — см. §3 «Живая физика поверх
+этого». Инстанс — `data/level/default_gen.tres`.
+
+### 4.5 `LiveSandSettings` (devlog §49, 2026-07-28)
+```gdscript
+class_name LiveSandSettings extends Resource
+
+@export var enabled: bool = true                  # рубильник — false = старое поведение
+@export var ticks_per_frame: int = 1
+@export var carve_clear_threshold: float = 0.5    # доля пустых px клетки -> клетка рушится
+@export var warn_dirty_cells: int = 20000         # диагностика, не ограничитель
+```
+Инстанс — `data/sand/live_sand.tres`. Подробности — §3.
+
 ---
 
 ## 5. Autoload
@@ -396,6 +445,10 @@ var ship_strength: float = 1.0         # -> делитель ВСЕГО вход
 var reload_time_scale: float = 1.0     # -> × WeaponData.reload_time (кулдаун)
 # Матч — читает MatchManager (devlog §22)
 var kills_per_level: int = 10
+# Рельеф — читает level.gd (devlog §49): 0 = разыграть seed заново при заходе
+# в уровень, иначе взять заданный; level_seed_used — что реально выпало
+var level_seed: int = 0
+var level_seed_used: int = 0
 # Детали визуала (флаги на будущее)
 var parallax_enabled: bool = true
 ```
@@ -656,9 +709,21 @@ Steam-пира. Сейчас сеть — `ENetMultiplayerPeer` (не Steam во
   сервер+клиент в одном процессе).
 - §24 — сеть: шов ввода через сеть (RemoteInput + ShipInputSync), интенты
   владельца доезжают в RemoteInput хоста; находка про совпадающие RPC-пути.
+- §48 — сеть: репликация carve рельефа (TerrainNetSync, reliable @rpc,
+  событие вместо состояния) + находка про первый RPC сразу после коннекта
+  (известный баг Godot 4 SceneMultiplayer, godotengine/godot#68750).
+- §49 — живая клеточная физика рельефа в геймплее (LiveSand: SandSim —
+  источник истины для движения материала, Terrain — рендер и мост коллизии,
+  НЕ удалён) + процедурная вариативность уровня по правилам (LevelGenRules,
+  фильтр играбельности, случайный seed матча). Замеры цены живого тика;
+  грабля: headless-Godot при ошибке парсинга висит, а не падает.
 
 Ссылки вида «§8»…«§17» в тексте выше (в §1–§7) указывают на эти разделы
 `devlog.md`. Реализованное на текущий момент: §8–§22 (шаги 1–6 плана §6) плюс
-§23 (старт сети, неделя 2 `timeline.md`). Следующий шаг по игровому контенту —
-Bases (§6, шаг 7); по сети — RemoteInput + синхронизация корабля/carve (см.
-§23.4). Неделя-за-неделей план — `notes/timeline.md`.
+§23–§25, §48 (сеть: подключение, ввод, синхронизация корабля, carve рельефа)
+и §49 (живая физика рельефа + процедурная вариативность уровня).
+Следующий шаг по игровому контенту — Bases (§6, шаг 7); по сети — спавн
+кораблей через `MultiplayerSpawner` в настоящий `level.tscn` (см. roadmap.md);
+по рельефу — грязные ЧАНКИ вместо одного прямоугольника в SandSim (открытый
+риск производительности, roadmap.md).
+Неделя-за-неделей план — `notes/timeline.md`.
