@@ -1,0 +1,14 @@
+[gd_resource type="Resource" script_class="BaseData" load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://resources/base_data.gd" id="1_base"]
+[ext_resource type="Resource" path="res://data/weapons/dumbfire.tres" id="2_dumbfire"]
+[ext_resource type="Resource" path="res://data/weapons/bomb.tres" id="3_bomb"]
+
+[resource]
+script = ExtResource("1_base")
+display_name = "база"
+zone_size = Vector2(120, 60)
+dock_speed_threshold = 40.0
+repair_rate = 25.0
+weapons = Array[Resource]([ExtResource("2_dumbfire"), ExtResource("3_bomb")])
+turn_press_threshold = 0.5
