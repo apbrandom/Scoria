@@ -1,7 +1,12 @@
-## Счёт, респавн и условие победы локального хотсит-дезматча (notes/mechanics.md:
-## "Deathmatch-режим: респавн, +1 за килл, −1 за самоубийство, смена уровня после
-## N киллов" — берём только счёт/респавн/победу, смена уровня и "последний
-## выживший на базу" из оригинала — отдельные будущие задачи, не здесь).
+## Счёт, респавн и условие победы локального хотсит-матча. Два режима из
+## оригинала (notes/mechanics.md §4), переключаются GameRules.win_condition:
+##   WIN_KILLS        — дезматч: респавн, +1 за килл, −1 за самоубийство,
+##                      победа по kills_per_level.
+##   WIN_LAST_TO_BASE — раунд: респавна НЕТ, побеждает последний выживший,
+##                      севший на базу. Без отключения респавна условие
+##                      недостижимо в принципе — живых всегда столько же,
+##                      сколько игроков, и "последнего" не существует.
+## Смена уровня после N киллов (тоже из оригинала) — отдельная будущая задача.
 ##
 ## АРХИТЕКТУРНОЕ УПРОЩЕНИЕ (см. notes/architecture.md §2.1): документ описывает
 ## MatchManager потомком будущего Main (Main > MatchManager + LevelHost + HUD),
@@ -51,6 +56,11 @@ func setup(ship_list: Array[Ship]) -> void:
 	for ship in ships:
 		_scores[ship] = 0
 		ship.destroyed.connect(_on_ship_destroyed.bind(ship))
+		# В режиме "последний — на базу" победа случается в момент ПОСАДКИ, а не
+		# в момент чужой смерти: последний выживший может долго лететь до базы.
+		# Без этой подписки _check_win() звался бы только из _apply_score и такую
+		# победу просто некому было бы заметить.
+		ship.docked_changed.connect(_on_ship_docked_changed)
 
 
 func get_score(ship: Ship) -> int:
@@ -125,6 +135,12 @@ func _on_ship_destroyed(killer: Node, victim: Ship) -> void:
 	_apply_score(killer, victim)
 	if _match_over:
 		return
+	# "Последний выживший — на базу" держится на том, что погибшие остаются
+	# погибшими: с респавном живых всегда столько же, сколько игроков, и
+	# "последнего" не существует. Раунд заканчивается победой или общей
+	# гибелью, дальше — restart_match() по R.
+	if GameRules.win_condition == GameRules.WIN_LAST_TO_BASE:
+		return
 	# process_in_physics=true (3-й позиционный аргумент) — иначе таймер живёт
 	# на IDLE-времени (аргумент по умолчанию false) и не гарантированно
 	# продвигается в headless-тестах, которые шагают ИСКЛЮЧИТЕЛЬНО
@@ -148,12 +164,50 @@ func _apply_score(killer: Node, victim: Ship) -> void:
 	_check_win()
 
 
+## Сигнал прилетает и на посадку, и на отстыковку — проверку зовём в обоих
+## случаях: победа могла бы «отмениться» только тем, что победитель улетел с
+## базы, а этого уже не бывает (_match_over не снимается).
+func _on_ship_docked_changed(_base: Node, _docked: bool) -> void:
+	if not _match_over:
+		_check_win()
+
+
 func _check_win() -> void:
+	if GameRules.win_condition == GameRules.WIN_LAST_TO_BASE:
+		_check_win_last_to_base()
+		return
+	_check_win_kills()
+
+
+func _check_win_kills() -> void:
 	for ship in ships:
 		if get_score(ship) >= GameRules.kills_per_level:
 			_match_over = true
 			_winner = ship
 			return
+
+
+## Победа оригинала: остался один и вернулся на базу (notes/mechanics.md §4).
+func _check_win_last_to_base() -> void:
+	# Соло-режим (player_count=1) иначе выигрывался бы касанием базы на старте:
+	# единственный корабль всегда "последний выживший". Пережить в таком матче
+	# некого — условие бессмысленно, а не просто неудобно.
+	if ships.size() < 2:
+		return
+	var alive: Array[Ship] = []
+	for ship in ships:
+		if is_instance_valid(ship) and ship.is_alive():
+			alive.append(ship)
+	if alive.is_empty():
+		# Последний разбился, не долетев — раунд окончен без победителя.
+		# Именно окончен, а не "продолжается с нулём живых": иначе матч завис бы
+		# навсегда, ведь респавна в этом режиме нет.
+		_match_over = true
+		_winner = null
+		return
+	if alive.size() == 1 and alive[0].is_docked():
+		_match_over = true
+		_winner = alive[0]
 
 
 func _alive_positions_excluding(exclude: Ship) -> Array[Vector2]:

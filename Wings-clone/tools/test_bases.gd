@@ -98,6 +98,7 @@ func _run() -> void:
 	await _test_weapon_select()
 	await _test_turn_gate()
 	_test_placement()
+	await _test_win_condition()
 
 
 # ------------------------------------------------------------------ стыковка
@@ -381,3 +382,115 @@ func _test_placement() -> void:
 		terrain.class_at(probe) == TerrainPalette.Cls.INDESTRUCTIBLE,
 		"класс после carve=%d" % terrain.class_at(probe))
 	terrain.queue_free()
+
+
+# ------------------------------------------------- условие победы «на базу»
+
+## MatchManager нужен минимальный рельеф — он чистит место под спавн через
+## Terrain.find_clear_spawn(). Своя маленькая картинка, а не боевой уровень:
+## правила победы к форме рельефа отношения не имеют.
+func _make_flat_terrain() -> Terrain:
+	var t := Terrain.new()
+	t.palette = load("res://data/terrain/wings_classes.tres")
+	t.immediate_rebuild = false
+	add_child(t)
+	var vis := Image.create(400, 400, false, Image.FORMAT_RGBA8)
+	vis.fill(Color(0.5, 0.3, 0.1, 1.0))
+	t.load_level(vis)
+	t.add_to_group("terrain")
+	return t
+
+
+func _make_match(terrain: Terrain, ships: Array[Ship]) -> MatchManager:
+	var m: MatchManager = preload("res://scripts/match/match_manager.gd").new()
+	m.terrain = terrain
+	m.respawn_delay = 0.05
+	add_child(m)
+	m.setup(ships)
+	return m
+
+
+func _test_win_condition() -> void:
+	print("\n-- условие победы «последний на базу» --")
+	var terrain := _make_flat_terrain()
+	await _step(1)
+
+	# Контроль: режим по умолчанию не изменился — респавн работает как раньше.
+	GameRules.reset()
+	GameRules.gravity_scale = 0.0
+	_check("режим по умолчанию — дезматч по фрагам",
+		GameRules.win_condition == GameRules.WIN_KILLS,
+		"win_condition=%d" % GameRules.win_condition)
+	var d1 := _make_ship(Vector2(100, 100))
+	var d2 := _make_ship(Vector2(300, 100))
+	var dm := _make_match(terrain, [d1, d2])
+	d2.take_damage(99999.0)
+	await _step(15)
+	_check("в режиме фрагов погибший воскресает как раньше", d2.is_alive())
+	_check("матч по фрагам не закончился от одной смерти", not dm.is_match_over())
+	d1.queue_free()
+	d2.queue_free()
+	dm.queue_free()
+	await _step(1)
+
+	# Режим «последний — на базу».
+	GameRules.win_condition = GameRules.WIN_LAST_TO_BASE
+	var base := _make_base(Vector2(500, 500), _make_test_base_data([]))
+	var a := _make_ship(Vector2(100, 100))
+	var b := _make_ship(Vector2(300, 100))
+	var m := _make_match(terrain, [a, b])
+	await _step(1)
+
+	b.take_damage(99999.0)
+	await _step(15)
+	_check("погибший НЕ воскресает — иначе «последнего» не бывает",
+		not b.is_alive())
+	_check("матч не окончен: выживший ещё не на базе", not m.is_match_over())
+	_check("победитель пока не определён", m.winner() == null)
+
+	# Долетел до базы — победа.
+	a.global_position = Vector2(500, 500)
+	a.linear_velocity = Vector2.ZERO
+	await _step(3)
+	_check("последний выживший сел на базу — матч окончен", m.is_match_over())
+	_check("победитель — тот, кто долетел", m.winner() == a,
+		"winner=%s" % ("a" if m.winner() == a else str(m.winner())))
+
+	a.queue_free()
+	b.queue_free()
+	m.queue_free()
+	await _step(1)
+
+	# Никто не дожил: раунд обязан закончиться, иначе он завис бы навсегда —
+	# респавна в этом режиме нет.
+	var c := _make_ship(Vector2(100, 100))
+	var d := _make_ship(Vector2(300, 100))
+	var m2 := _make_match(terrain, [c, d])
+	await _step(1)
+	c.take_damage(99999.0)
+	d.take_damage(99999.0)
+	await _step(3)
+	_check("все погибли — раунд окончен", m2.is_match_over())
+	_check("победителя нет (ничья)", m2.winner() == null)
+	c.queue_free()
+	d.queue_free()
+	m2.queue_free()
+	await _step(1)
+
+	# Соло: один корабль всегда «последний выживший», касанием базы выигрывать
+	# нельзя — пережить некого.
+	var solo := _make_ship(Vector2(500, 500))
+	var m3 := _make_match(terrain, [solo])
+	await _step(3)
+	_check("соло-матч не выигрывается посадкой на базу", not m3.is_match_over(),
+		"пристыкован=%s" % str(solo.is_docked()))
+	solo.queue_free()
+	m3.queue_free()
+	base.queue_free()
+	terrain.queue_free()
+	await _step(1)
+
+	GameRules.reset()
+	_check("GameRules.reset() возвращает режим победы",
+		GameRules.win_condition == GameRules.WIN_KILLS,
+		"win_condition=%d" % GameRules.win_condition)

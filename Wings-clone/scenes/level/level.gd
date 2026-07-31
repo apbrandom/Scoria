@@ -7,20 +7,21 @@
 ## жила в scenes/ship/ и не знала про правила матча. Level собирает рельеф + 1-2
 ## корабля с локальным вводом, следит общей камерой, показывает
 ## HUD и владеет MatchManager (счёт, респавн, условие победы дезматча — см.
-## scripts/match/match_manager.gd, notes/architecture.md §2.1, §6 шаг 6). Режим
-## "последний выживший летит на базу" и смена уровней — не здесь, требует системы
-## Bases, которой ещё нет (notes/roadmap.md).
+## scripts/match/match_manager.gd, notes/architecture.md §2.1, §6 шаг 6) и
+## поднимает базы там, где их разместил генератор уровня. Смена уровней — не
+## здесь (notes/roadmap.md).
 ##
 ## Управление: P1 ← → поворот · ↑ тяга · Space пулемёт · Ctrl ракетница ·
 ## P2 (если player_count=2) A D поворот · W тяга · Q пулемёт · E ракетница ·
+## на базе ← → (A D) — выбор оружия вместо поворота ·
 ## R — рестарт матча (после победы) · F1 коллизия рельефа · колесо мыши зум ·
 ## ESC — назад в главное меню.
 ##
 ## Структура по architecture.md §2.2 упрощена: контейнеры Ships/Projectiles/Bases
 ## не заведены — MatchManager и HUD уже имеют прямой доступ к обоим кораблям через
-## _ships: Array[Ship], а снаряды как рождались прямыми потомками Level
-## (Ship._fire добавляет их в get_parent()), так и рождаются — заводить контейнер
-## сейчас без Bases был бы половинчатый шаг без пользы. Рельеф ищется через
+## _ships: Array[Ship], базы держит _bases, а снаряды как рождались прямыми
+## потомками Level (Ship._fire добавляет их в get_parent()), так и рождаются:
+## контейнер-узел ради двух-трёх плоских списков ничего не даёт. Рельеф ищется через
 ## группу "terrain" независимо от места в дереве. Правила матча
 ## (гравитация/прочность/...) корабль берёт сам из autoload GameRules в
 ## Ship.apply_rules(); условие победы (kills_per_level) читает оттуда же MatchManager.
@@ -45,6 +46,9 @@ const HUD_LABEL_SCRIPT := preload("res://scripts/level/hud_label.gd")
 const SAND_LEVEL_GEN_SCRIPT := preload("res://scripts/level/sand_level_gen.gd")
 ## preload по пути — та же причина, что у остальных SCRIPT-констант выше.
 const LIVE_SAND_SCRIPT := preload("res://scripts/level/live_sand.gd")
+## preload по пути — та же причина, что у остальных SCRIPT-констант выше.
+const BASE_ZONE_SCRIPT := preload("res://scripts/level/base_zone.gd")
+const BASE_DATA := preload("res://data/bases/common.tres")
 ## Широкий и плоский, не квадрат — "много открытого пространства" ложится
 ## лучше на широкий экран. Замерено (tools/, разово): 1800x900 -> 1.1с,
 ## 2700x1350 -> 2.1с, 5400x2700 -> 4.9с генерации SandLevelGen — рост терпимый
@@ -74,6 +78,7 @@ var _palette: TerrainPalette
 var _terrain: Terrain
 var _match: MatchManager
 var _ships: Array[Ship] = []
+var _bases: Array[BaseZone] = []
 var _last_alive_pos: Dictionary = {}   # Ship -> Vector2, для камеры пока корабль мёртв
 var _cam: Camera2D
 var _zoom_mult := 1.0
@@ -132,6 +137,17 @@ func _ready() -> void:
 		_live_sand = live
 	else:
 		live.free()
+
+	# Базы — там, где генератор нашёл ровное место и впечатал каменную площадку
+	# (по одной на половину карты, см. SandLevelGen). Поднимаются ДО кораблей:
+	# спавн выбирается случайно и может оказаться прямо над базой — пусть она
+	# к этому моменту уже существует, чтобы стыковка отработала с первого кадра.
+	for at in lvl["bases"]:
+		var zone: BaseZone = BASE_ZONE_SCRIPT.new()
+		zone.data = BASE_DATA
+		add_child(zone)
+		zone.global_position = at
+		_bases.append(zone)
 
 	_debug = TerrainDebugDraw.new()
 	_debug.terrain = _terrain
@@ -270,9 +286,13 @@ func _update_hud() -> void:
 	for i in _ships.size():
 		var ship := _ships[i]
 		var status := "" if ship.is_alive() else " — уничтожен"
-		lines.append("P%d %s: прочность %d/%d   счёт %d%s" % [
+		if ship.is_alive() and ship.is_docked():
+			status = " — НА БАЗЕ (ремонт, ← → выбор оружия)"
+		lines.append("P%d %s: прочность %d/%d   счёт %d   %s%s" % [
 			i + 1, ship.data.display_name, ship.hull, ship.data.max_hull,
-			_match.get_score(ship), status])
+			_match.get_score(ship),
+			ship.secondary_weapon.display_name if ship.secondary_weapon != null else "—",
+			status])
 	var rules := _rules_line()
 	if rules != "":
 		lines.append(rules)
@@ -282,9 +302,21 @@ func _update_hud() -> void:
 		lines.append("P2: A D поворот · W тяга · Q пулемёт · E ракетница")
 	lines.append("F1 коллизия · колесо зум · ESC меню")
 	if _match.is_match_over():
-		lines.append(">>> P%d ПОБЕДИЛ (%d килов) — R для рестарта матча <<<" % [
-			_ships.find(_match.winner()) + 1, _match.get_score(_match.winner())])
+		lines.append(_win_line())
 	_hud.text = "\n".join(lines)
+
+
+## В режиме "последний — на базу" победителя может не быть вовсе: последний
+## выживший разбился, не долетев. Прежняя строка в этом случае напечатала бы
+## "P0 ПОБЕДИЛ" (find(null) == -1), поэтому ничью выносим явно.
+func _win_line() -> String:
+	var w := _match.winner()
+	if w == null:
+		return ">>> НИЧЬЯ: до базы не долетел никто — R для нового раунда <<<"
+	var num := _ships.find(w) + 1
+	if GameRules.win_condition == GameRules.WIN_LAST_TO_BASE:
+		return ">>> P%d ПОБЕДИЛ: вернулся на базу последним выжившим — R для нового раунда <<<" % num
+	return ">>> P%d ПОБЕДИЛ (%d килов) — R для рестарта матча <<<" % [num, _match.get_score(w)]
 
 
 ## Показывает активные правила матча, только если они отличаются от нейтральных.

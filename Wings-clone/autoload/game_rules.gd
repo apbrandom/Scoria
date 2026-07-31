@@ -18,7 +18,21 @@
 ##   air_resistance_scale -> Ship.apply_rules()  : linear_damp = data.linear_damp * это
 ##   ship_strength        -> Ship.take_damage()  : весь входящий урон делится на это
 ##   reload_time_scale    -> Ship._physics_process(): кулдаун = reload_time * это
+##   win_condition        -> MatchManager._check_win()
 extends Node
+
+## Условия победы. Целочисленные const, а не enum: доступ GameRules.WIN_KILLS
+## через экземпляр autoload заведомо работает, а семантика enum на синглтоне —
+## лишний вопрос на ровном месте (в проекте уже есть похожий строковый режим,
+## net_forced_role — там строка оправдана разбором аргументов командной строки,
+## здесь такой причины нет).
+##
+## WIN_KILLS — дезматч оригинала: респавн, +1 за килл, победа по kills_per_level.
+## WIN_LAST_TO_BASE — «последний выживший должен вернуться на базу»
+## (notes/mechanics.md §4). Респавна в раунде НЕТ — иначе «последнего
+## выжившего» не существует как состояния и условие никогда не сработает.
+const WIN_KILLS := 0
+const WIN_LAST_TO_BASE := 1
 
 # --- Физика: множители поверх ShipData/ProjectSettings, 1.0 = «как задано» ---
 
@@ -44,6 +58,11 @@ var reload_time_scale: float = 1.0
 ## Сколько фрагов до конца уровня. Читает MatchManager (scripts/match/match_manager.gd)
 ## как условие победы: score >= kills_per_level.
 var kills_per_level: int = 10
+
+## Как выигрывается матч: WIN_KILLS (по умолчанию — прежнее поведение) или
+## WIN_LAST_TO_BASE. Читает MatchManager. Меняет не только проверку победы, но и
+## респавн: в режиме «на базу» погибший ждёт конца раунда, а не воскресает.
+var win_condition: int = WIN_KILLS
 
 ## Сколько кораблей (локальных игроков с клавиатуры) поднимает level.gd:
 ## 1 — сольный полёт без противника, 2 — хотсит-дезматч на одном экране
@@ -94,6 +113,7 @@ func reset() -> void:
 	ship_strength = 1.0
 	reload_time_scale = 1.0
 	kills_per_level = 10
+	win_condition = WIN_KILLS
 	player_count = 2
 	level_seed = 0
 	level_seed_used = 0
