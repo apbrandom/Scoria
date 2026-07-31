@@ -14,6 +14,13 @@ extends RigidBody2D
 
 signal hull_changed(hull: float, max_hull: float)
 signal crashed(speed: float)
+## Корабль встал на базу / покинул её. base — та самая BaseZone (Node, а не
+## BaseZone: корабль намеренно ничего не знает про класс базы — вся логика
+## ремонта и выбора оружия живёт в BaseZone, здесь только флаг состояния).
+## Слушает MatchManager: в режиме «последний выживший — на базу» победа
+## случается в момент ПОСАДКИ, а не в момент чужой смерти, ловить её больше
+## нечем.
+signal docked_changed(base: Node, docked: bool)
 ## killer — кто нанёс смертельный урон (см. take_damage), null — смерть без
 ## чужого участия (столкновение с рельефом). MatchManager трактует null или
 ## killer == self (самострел) как самоубийство.
@@ -59,6 +66,8 @@ var aim_angle := 0.0
 var hull := 0.0
 
 var _alive := true
+## На какой базе стоим (null — в полёте). Ставит и снимает сама BaseZone.
+var _docked_at: Node = null
 var _crash_cd := 0.0
 var _primary_cd := 0.0
 var _secondary_cd := 0.0
@@ -172,9 +181,17 @@ func _physics_process(delta: float) -> void:
 	_secondary_cd = maxf(_secondary_cd - delta, 0.0)
 	input.poll(delta)
 
-	# поворот с фиксированной скоростью
-	aim_angle = wrapf(aim_angle + input.turn * data.turn_rate * delta, -PI, PI)
-	_apply_aim_angle()
+	# Поворот с фиксированной скоростью. На базе те же кнопки ПЕРЕНАЗНАЧЕНЫ на
+	# выбор оружия (как в оригинале, notes/mechanics.md §4) — корабль стоит,
+	# целиться нечем и незачем. Кто именно листает оружие, знает BaseZone;
+	# здесь только не даём вводу крутить нос.
+	#
+	# Расчёт сил ниже НЕ трогаем: тяга, гравитация и сопротивление работают на
+	# базе как обычно — взлететь можно в любой момент, и это же само снимает
+	# стыковку (скорость уйдёт выше BaseData.dock_speed_threshold).
+	if _docked_at == null:
+		aim_angle = wrapf(aim_angle + input.turn * data.turn_rate * delta, -PI, PI)
+		_apply_aim_angle()
 
 	if input.thrust:
 		apply_central_force(Vector2.UP.rotated(aim_angle) * data.thrust)
@@ -306,6 +323,39 @@ func take_damage(amount: float, attacker: Node = null) -> void:
 		_die(attacker)
 
 
+## Восстановление корпуса (база, notes/mechanics.md §4) — зеркало take_damage.
+## Мёртвый не чинится: воскрешение — дело respawn(), а не ремонта.
+##
+## Сигнал шлём ТОЛЬКО при реальном изменении: base зовёт это каждый физ-кадр,
+## пока корабль стоит, и на полной прочности hull_changed иначе летел бы 60 раз
+## в секунду в HUD (а в будущем — в сеть) без единого изменения.
+func repair(amount: float) -> void:
+	if not _alive or amount <= 0.0:
+		return
+	var before := hull
+	hull = minf(hull + amount, data.max_hull)
+	if hull != before:
+		hull_changed.emit(hull, data.max_hull)
+
+
+## Зовёт BaseZone. Снятие сверяется с тем, КТО ставил: базы опрашивают корабли
+## независимо друг от друга, и без этой сверки вторая база (в которой корабля
+## нет) затирала бы флаг первой — исход зависел бы от порядка обхода узлов.
+func set_docked(base: Node, docked: bool) -> void:
+	if docked:
+		if _docked_at == base:
+			return
+		_docked_at = base
+		docked_changed.emit(base, true)
+	elif _docked_at == base:
+		_docked_at = null
+		docked_changed.emit(base, false)
+
+
+func is_docked() -> bool:
+	return _docked_at != null
+
+
 func _die(killer: Node = null) -> void:
 	_alive = false
 	destroyed.emit(killer)
@@ -320,6 +370,11 @@ func respawn(at: Vector2) -> void:
 	freeze = false
 	visible = true
 	_crash_cd = 0.0
+	# Возрождаемся в другом месте — прежняя стыковка недействительна. Через
+	# set_docked, а не присваиванием напрямую: и базе, и MatchManager нужно
+	# узнать об этом сигналом, иначе они останутся с протухшим состоянием.
+	if _docked_at != null:
+		set_docked(_docked_at, false)
 	equip_primary(primary_weapon)
 	equip_secondary(secondary_weapon)
 	aim_angle = 0.0
