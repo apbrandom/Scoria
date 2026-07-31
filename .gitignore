@@ -4,3 +4,13 @@
 
 # Локальные настройки Claude Code — привязаны к этой машине, не общие
 /.claude/settings.local.json
+
+# macOS Finder
+.DS_Store
+
+# Сырой ввод/вывод раундов делегирования Qwen (notes/qwen_playbook.md) —
+# рабочие файлы одного прогона, не документация: распакованный результат
+# уже фиксируется в notes/qwen_eval.md после каждого раунда (devlog §45-47,
+# уборка от 2026-07-31, roadmap.md «Оптимизация notes»)
+notes/qwen_prompt_*.txt
+notes/qwen_run_*.log

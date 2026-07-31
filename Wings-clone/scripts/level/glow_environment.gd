@@ -1,7 +1,7 @@
 ## Общий WorldEnvironment для игровых сцен (level.tscn/net_playground.tscn) —
 ## решение принято в architecture.md §7 ("Свечение (двигатель/взрыв/выстрел)"),
 ## узел не был заведён ни в одной сцене. Один источник истины вместо двух копий
-## настроек, как и LevelImageLoader/_load_image до дедупа (см. audit.md).
+## настроек, как и LevelImageLoader/_load_image до дедупа.
 ##
 ## background_mode = BG_CANVAS обязателен: сцена рисует 2D-контент сама
 ## (Terrain/Ship/фон), WorldEnvironment здесь только ради пост-процесса Glow,

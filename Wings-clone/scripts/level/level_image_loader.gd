@@ -1,7 +1,7 @@
 ## Общая загрузка visual.png/mask.png уровня — раньше три копии одного и того
 ## же кода жили в level.gd/net_playground.gd/terrain_playground.gd и уже успели
-## разойтись (net_playground.gd потерял предупреждение про испорченный импорт,
-## см. notes/audit.md) — один источник истины вместо трёх.
+## разойтись (net_playground.gd потерял предупреждение про испорченный импорт) —
+## один источник истины вместо трёх.
 class_name LevelImageLoader
 extends RefCounted
 
