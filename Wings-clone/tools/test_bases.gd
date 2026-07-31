@@ -323,6 +323,15 @@ func _test_placement() -> void:
 	var half: int = GEN_RULES.base_half_width_cells
 	var depth: int = GEN_RULES.base_platform_depth_cells
 
+	# Площадка обязана быть НЕ УЖЕ зоны стыковки, иначе корабль «стыкуется»,
+	# наполовину вися за её краем: зона — прямоугольник в мире, она не знает,
+	# есть ли под ней твердь. Два числа живут в РАЗНЫХ .tres (default_gen.tres и
+	# common.tres), связать их в коде нечем — только этой проверкой. Ловилось
+	# вживую: при half=5 площадка была 66 px против зоны в 120 px.
+	var platform_px := (half * 2 + 1) * cell_px
+	_check("площадка не уже зоны стыковки", platform_px >= COMMON_BASE.zone_size.x,
+		"площадка %d px, зона %d px" % [platform_px, int(COMMON_BASE.zone_size.x)])
+
 	var built := SAND_LEVEL_GEN.build_settled_sim(LEVEL_SIZE, 4242, GEN_RULES)
 	var bases: Array = built["bases"]
 	_check("на уровне нашлись базы", bases.size() == 2, "баз=%d" % bases.size())

@@ -300,7 +300,7 @@ func _update_hud() -> void:
 	lines.append("P1: ← → поворот · ↑ тяга · Space пулемёт · Ctrl ракетница")
 	if _ships.size() > 1:
 		lines.append("P2: A D поворот · W тяга · Q пулемёт · E ракетница")
-	lines.append("F1 коллизия · колесо зум · ESC меню")
+	lines.append("на базе кнопки поворота выбирают оружие · F1 коллизия · колесо зум · ESC меню")
 	if _match.is_match_over():
 		lines.append(_win_line())
 	_hud.text = "\n".join(lines)
