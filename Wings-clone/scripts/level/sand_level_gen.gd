@@ -85,7 +85,7 @@ static func build_settled_sim(size: Vector2i, rng_seed: int, rules = null) -> Di
 		built["attempts"] = i + 1
 		built["report"] = report
 		if report["ok"]:
-			return built
+			return _place_bases(built, rules)
 		# Не сошлось — запоминаем лучший из отвергнутых. Загрузка уровня не
 		# должна падать из-за неудачной случайности: чуть менее удачный рельеф
 		# лучше, чем чёрный экран (см. шапку файла).
@@ -98,7 +98,47 @@ static func build_settled_sim(size: Vector2i, rng_seed: int, rules = null) -> Di
 	# здесь перебор дошёл до конца, и лучший кандидат мог оказаться не последним.
 	# Без этой строки поле молча значило бы разное в двух ветках одной функции.
 	best["attempts"] = attempts
-	return best
+	return _place_bases(best, rules)
+
+
+## Впечатывает площадки под базы и кладёт в результат "bases" — МИРОВЫЕ
+## координаты центра каждой площадки (не клетки: снаружи, в Level, клеток нет).
+##
+## Отдельным проходом после выбора кандидата, а не внутри _evaluate: тот
+## вызывается для КАЖДОЙ попытки seed'а и обязан оставаться чистой проверкой —
+## менять симуляцию у отвергнутых уровней бессмысленно и дорого.
+##
+## Уровень без баз — не повод падать: если сюда пришёл "лучший из отвергнутых"
+## и места под базу в нём не нашлось, отдаём пустой список (та же логика, что
+## уже принята для отвергнутых уровней вообще, см. шапку build_settled_sim).
+static func _place_bases(built: Dictionary, rules) -> Dictionary:
+	var sim = built["sim"]
+	var grid: Vector2i = built["grid"]
+	var stats: Dictionary = built["report"]["stats"]
+	var cell_px: int = rules.cell_px
+
+	var bases: Array[Vector2] = []
+	var stamped := false
+	for key in ["base_left", "base_right"]:
+		var spot: Vector2i = stats[key]
+		if spot.x < 0:
+			continue
+		_stamp_base_platform(sim, grid, spot, rules)
+		stamped = true
+		# Центр клетки, а не её угол: зона базы симметрична относительно центра.
+		bases.append(Vector2(
+			(spot.x + 0.5) * cell_px,
+			(spot.y + 0.5) * cell_px))
+
+	if stamped:
+		# Расчистка неба над площадкой могла подвесить песок — досаживаем.
+		# Камень при этом не двинется, площадка останется ровной.
+		built["settle_ticks"] = int(built["settle_ticks"]) + _settle(sim)
+	if bases.is_empty():
+		push_warning("Уровень без баз: ровного места не нашлось ни в одной половине")
+
+	built["bases"] = bases
+	return built
 
 
 ## Одна попытка: разыграть числа по seed и досчитать симуляцию до покоя.
@@ -117,10 +157,7 @@ static func _build_once(size: Vector2i, rng_seed: int, rules) -> Dictionary:
 		_carve_lake(sim, surface_row, grid_w, grid_h, rules,
 			int(lake["cx"]), int(lake["half"]), int(lake["depth"]))
 
-	var ticks := 0
-	while sim.is_active() and ticks < MAX_SETTLE_TICKS:
-		sim.step()
-		ticks += 1
+	var ticks := _settle(sim)
 
 	# "Спящее тело" (SandSim.flatten_liquid_bodies, devlog §43) — флуд-филл +
 	# мгновенный пересчёт объёма ВМЕСТО того, чтобы полагаться на то, что
@@ -133,6 +170,17 @@ static func _build_once(size: Vector2i, rng_seed: int, rules) -> Dictionary:
 	sim.flatten_liquid_bodies()
 
 	return {"sim": sim, "grid": Vector2i(grid_w, grid_h), "settle_ticks": ticks, "params": p}
+
+
+## Досчитать симуляцию до покоя. Отдельной функцией, потому что оседать нужно
+## ДВАЖДЫ: после раскладки рельефа и ещё раз после впечатывания площадок под
+## базы (расчистка неба над площадкой может подвесить песок над ней).
+static func _settle(sim) -> int:
+	var ticks := 0
+	while sim.is_active() and ticks < MAX_SETTLE_TICKS:
+		sim.step()
+		ticks += 1
+	return ticks
 
 
 ## Разыгрывает КОНКРЕТНЫЕ числа уровня из диапазонов LevelGenRules.
@@ -259,8 +307,15 @@ static func _evaluate(sim, grid: Vector2i, rules) -> Dictionary:
 	# Самая ВЫСОКАЯ точка рельефа (минимальный y непустой клетки по всем
 	# колонкам) — она и определяет, остаётся ли над картой сплошное небо.
 	var highest_row := grid.y
+	# Верхняя непустая клетка КАЖДОЙ колонки (grid.y — колонка пуста насквозь).
+	# Считается здесь, а не отдельным проходом: этот цикл и так обходит все
+	# клетки, а поиску места под базу нужен ровно профиль поверхности, и свой
+	# проход по сетке ради него стоил бы столько же, сколько вся оценка.
+	var surface := PackedInt32Array()
+	surface.resize(grid.x)
 	for gx in grid.x:
 		var found := false
+		surface[gx] = grid.y
 		for gy in grid.y:
 			var c: int = sim.get_cell(gx, gy)
 			if c == 0:
@@ -270,6 +325,7 @@ static func _evaluate(sim, grid: Vector2i, rules) -> Dictionary:
 				water += 1
 			if not found:
 				highest_row = mini(highest_row, gy)
+				surface[gx] = gy
 				found = true
 
 	var open_frac := float(empty) / float(total)
@@ -279,6 +335,12 @@ static func _evaluate(sim, grid: Vector2i, rules) -> Dictionary:
 	var radius_cells: int = maxi(int(rules.spawn_clear_radius_px) / int(rules.cell_px), 1)
 	var spawn_left := _has_spawn_spot(sim, grid, 0, grid.x / 2, radius_cells)
 	var spawn_right := _has_spawn_spot(sim, grid, grid.x / 2, grid.x, radius_cells)
+
+	# По базе на половину карты — как и спавны: обе стороны должны быть равны,
+	# иначе игрок, которому до базы вдвое дальше, проигрывает по географии, а не
+	# по игре.
+	var base_left := _find_base_spot(sim, grid, surface, 0, grid.x / 2, rules)
+	var base_right := _find_base_spot(sim, grid, surface, grid.x / 2, grid.x, rules)
 
 	var fails: Array = []
 	if open_frac < rules.min_open_sky_frac:
@@ -291,13 +353,18 @@ static func _evaluate(sim, grid: Vector2i, rules) -> Dictionary:
 		fails.append("нет места под спавн в левой половине")
 	if not spawn_right:
 		fails.append("нет места под спавн в правой половине")
+	if base_left.x < 0:
+		fails.append("нет ровного места под базу в левой половине")
+	if base_right.x < 0:
+		fails.append("нет ровного места под базу в правой половине")
 
 	# Доли считаем "насколько выполнено", каждая зажата в 0..1, поровну весом.
 	var s_open := clampf(open_frac / maxf(rules.min_open_sky_frac, 0.001), 0.0, 1.0)
 	var s_water := clampf(rules.max_water_frac / maxf(water_frac, 0.001), 0.0, 1.0)
 	var s_head := clampf(headroom_frac / maxf(rules.min_sky_headroom_frac, 0.001), 0.0, 1.0)
 	var s_spawn := (1.0 if spawn_left else 0.0) + (1.0 if spawn_right else 0.0)
-	var score := (s_open + s_water + s_head + s_spawn) / 5.0
+	var s_base := (1.0 if base_left.x >= 0 else 0.0) + (1.0 if base_right.x >= 0 else 0.0)
+	var score := (s_open + s_water + s_head + s_spawn + s_base) / 7.0
 
 	return {
 		"ok": fails.is_empty(),
@@ -309,6 +376,12 @@ static func _evaluate(sim, grid: Vector2i, rules) -> Dictionary:
 			"headroom_frac": headroom_frac,
 			"spawn_left": spawn_left,
 			"spawn_right": spawn_right,
+			# Клетки поверхности, куда встанут базы; (-1,-1) — места не нашлось.
+			# Отсюда их забирает build_settled_sim: искать второй раз незачем,
+			# а сам _evaluate ничего не меняет в симуляции (остаётся чистой
+			# проверкой), поэтому впечатывание камня делается не здесь.
+			"base_left": base_left,
+			"base_right": base_right,
 		},
 	}
 
@@ -355,6 +428,93 @@ static func _spot_is_clear(sim, cx: int, cy: int, radius: int) -> bool:
 	return cells > 0 and float(empty) / float(cells) >= 0.5
 
 
+# ---------------------------------------------------------------------- базы
+
+## Ищет в полосе колонок [x_from, x_to) самое РОВНОЕ место под посадочную
+## площадку базы. Возвращает клетку поверхности в центре площадки или (-1,-1),
+## если места нет.
+##
+## Работает по готовому профилю поверхности (surface из _evaluate), а не лазит в
+## sim за каждой клеткой: колонок в площадке десяток, кандидатов — сотня, и
+## самостоятельный поиск верхней клетки для каждого стоил бы столько же, сколько
+## вся проверка играбельности.
+##
+## Берём самое ровное, а не первое подходящее: перепад в пределах допуска всё
+## равно наклоняет площадку, и разница между "почти плоско" и "на пределе
+## допуска" на глаз заметна, а перебор всё равно идёт до конца полосы.
+##
+## Небо над площадкой проверять отдельно НЕ нужно: surface[x] — верхняя непустая
+## клетка колонки, то есть всё выше неё пусто по определению. Достаточно, чтобы
+## сама поверхность лежала не выше base_headroom_cells от края карты.
+static func _find_base_spot(sim, grid: Vector2i, surface: PackedInt32Array,
+		x_from: int, x_to: int, rules) -> Vector2i:
+	var half: int = rules.base_half_width_cells
+	var headroom: int = rules.base_headroom_cells
+	var tolerance: int = rules.base_flat_tolerance_cells
+	var border: int = rules.border_cells
+
+	# Не вплотную к нерушимой кайме: база, впритык прижатая к стене уровня,
+	# наполовину закрыта ею и садиться в неё неудобно.
+	var lo := maxi(x_from + half, border + 1 + half)
+	var hi := mini(x_to - half, grid.x - border - 1 - half)
+
+	var best := Vector2i(-1, -1)
+	var best_spread := tolerance + 1
+	var cx := lo
+	while cx < hi:
+		var spread := _base_spot_spread(sim, grid, surface, cx, half, headroom)
+		if spread >= 0 and spread <= tolerance and spread < best_spread:
+			best_spread = spread
+			best = Vector2i(cx, surface[cx])
+			if spread == 0:
+				break   # ровнее уже не будет
+		cx += 1
+	return best
+
+
+## Перепад высот поверхности по ширине площадки вокруг cx, в клетках.
+## -1 — место непригодно в принципе (пустая колонка, вода, нет высоты под
+## площадку или над ней).
+static func _base_spot_spread(sim, grid: Vector2i, surface: PackedInt32Array,
+		cx: int, half: int, headroom: int) -> int:
+	var lowest := -1
+	var highest := grid.y + 1
+	for x in range(cx - half, cx + half + 1):
+		var row := surface[x]
+		# Колонка пуста насквозь (row == grid.y) — под площадкой пропасть.
+		if row >= grid.y:
+			return -1
+		# Слишком высоко: залететь и сесть будет некуда.
+		if row < headroom:
+			return -1
+		# На воде базы не строим — площадка ушла бы под воду вместе с кораблём.
+		if sim.get_cell(x, row) == WATER_ID:
+			return -1
+		lowest = maxi(lowest, row)
+		highest = mini(highest, row)
+	return lowest - highest
+
+
+## Вписывает под площадку пласт нерушимого камня и расчищает над ней небо.
+##
+## Камень (STONE_ID -> TerrainPalette.Cls.INDESTRUCTIBLE, см. cls_of) carve не
+## берёт, и живая осыпь SandSim его не двигает — то есть базу не выроют бомбой и
+## не засыплет обвалом, она остаётся пригодной весь матч. В оригинале база была
+## пикселями уровня и уничтожалась; здесь сознательно наоборот (roadmap.md).
+static func _stamp_base_platform(sim, grid: Vector2i, spot: Vector2i, rules) -> void:
+	var half: int = rules.base_half_width_cells
+	var depth: int = rules.base_platform_depth_cells
+	var headroom: int = rules.base_headroom_cells
+	var row := spot.y
+	for x in range(spot.x - half, spot.x + half + 1):
+		# Небо над площадкой: выравниваем ВСЕ колонки по одной высоте, иначе
+		# соседний бугор в пределах допуска остаётся торчать сбоку от базы.
+		for y in range(maxi(row - headroom, 0), row):
+			sim.set_cell(x, y, 0)
+		for y in range(row, mini(row + depth, grid.y)):
+			sim.set_cell(x, y, STONE_ID)
+
+
 # ---------------------------------------------------------------- запекание
 
 ## Возвращает {"visual": Image, "mask": Image}, как и TestLevelGen.generate(),
@@ -373,6 +533,7 @@ static func generate(size: Vector2i, rng_seed: int, palette: TerrainPalette, rul
 	out["seed_used"] = built["seed_used"]
 	out["attempts"] = built["attempts"]
 	out["report"] = built["report"]
+	out["bases"] = built["bases"]
 	return out
 
 

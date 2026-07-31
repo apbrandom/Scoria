@@ -19,6 +19,11 @@ const SHIP_DATA := preload("res://data/ships/normal.tres")
 ## (та же грабля, что у MATCH_MANAGER_SCRIPT в level.gd).
 const BASE_ZONE_SCRIPT := preload("res://scripts/level/base_zone.gd")
 const COMMON_BASE := preload("res://data/bases/common.tres")
+const SAND_LEVEL_GEN := preload("res://scripts/level/sand_level_gen.gd")
+const GEN_RULES := preload("res://data/level/default_gen.tres")
+## Размер боевого уровня (level.gd::SAND_LEVEL_SIZE) — размещение баз проверяем
+## на том же поле, на котором в него будут играть, а не на удобном маленьком.
+const LEVEL_SIZE := Vector2i(2700, 1350)
 
 var _pass := 0
 var _fail := 0
@@ -92,6 +97,7 @@ func _run() -> void:
 	await _test_repair()
 	await _test_weapon_select()
 	await _test_turn_gate()
+	_test_placement()
 
 
 # ------------------------------------------------------------------ стыковка
@@ -305,3 +311,73 @@ func _test_turn_gate() -> void:
 	ship.queue_free()
 	base.queue_free()
 	await _step(1)
+
+
+# --------------------------------------------------- размещение баз на уровне
+
+func _test_placement() -> void:
+	print("\n-- размещение баз на сгенерированном уровне --")
+	var palette: TerrainPalette = load("res://data/terrain/wings_classes.tres")
+	var cell_px: int = GEN_RULES.cell_px
+	var half: int = GEN_RULES.base_half_width_cells
+	var depth: int = GEN_RULES.base_platform_depth_cells
+
+	var built := SAND_LEVEL_GEN.build_settled_sim(LEVEL_SIZE, 4242, GEN_RULES)
+	var bases: Array = built["bases"]
+	_check("на уровне нашлись базы", bases.size() == 2, "баз=%d" % bases.size())
+	if bases.size() < 2:
+		return
+
+	# По базе на половину: иначе игрок, которому до ремонта вдвое дальше,
+	# проигрывает по географии, а не по игре.
+	var mid := LEVEL_SIZE.x / 2.0
+	var left_count := 0
+	for b in bases:
+		if b.x < mid:
+			left_count += 1
+	_check("по одной базе в каждой половине карты", left_count == 1,
+		"в левой половине=%d из %d" % [left_count, bases.size()])
+
+	# Тот же seed обязан дать те же базы — на этом стоит будущий сетевой матч,
+	# где хост и клиент строят уровень независимо (roadmap.md).
+	var again := SAND_LEVEL_GEN.build_settled_sim(LEVEL_SIZE, 4242, GEN_RULES)
+	_check("тот же seed даёт те же позиции баз", again["bases"] == bases,
+		"%s vs %s" % [str(bases), str(again["bases"])])
+
+	# Под базой — камень, над базой — воздух (иначе садиться некуда).
+	var sim = built["sim"]
+	var spot: Vector2 = bases[0]
+	var gx := int(spot.x / cell_px)
+	var gy := int(spot.y / cell_px)
+	var stone_ok := true
+	var sky_ok := true
+	for x in range(gx - half, gx + half + 1):
+		for y in range(gy, gy + depth):
+			if SAND_LEVEL_GEN.cls_of(sim.get_cell(x, y)) != TerrainPalette.Cls.INDESTRUCTIBLE:
+				stone_ok = false
+		if sim.get_cell(x, gy - 1) != 0:
+			sky_ok = false
+	_check("под базой сплошной неразрушаемый камень", stone_ok,
+		"площадка %d клеток шириной, %d глубиной" % [half * 2 + 1, depth])
+	_check("над базой пусто — есть куда сесть", sky_ok)
+
+	# Площадку нельзя выесть оружием: класс INDESTRUCTIBLE carve не берёт,
+	# поэтому база остаётся пригодной весь матч. В оригинале база была обычными
+	# пикселями уровня и уничтожалась — здесь сознательное расхождение.
+	var lvl := SAND_LEVEL_GEN.generate(LEVEL_SIZE, 4242, palette, GEN_RULES)
+	var terrain := Terrain.new()
+	terrain.palette = palette
+	terrain.immediate_rebuild = false
+	add_child(terrain)
+	terrain.load_level(lvl["visual"], lvl["mask"])
+	var base_spot: Vector2 = lvl["bases"][0]
+	# На клетку ниже поверхности — заведомо в толще пласта, а не на его кромке.
+	var probe := Vector2i(int(base_spot.x), int(base_spot.y) + cell_px)
+	var cls_before := terrain.class_at(probe)
+	_check("центр площадки — неразрушаемый класс",
+		cls_before == TerrainPalette.Cls.INDESTRUCTIBLE, "класс=%d" % cls_before)
+	terrain.carve_circle(probe, 60)
+	_check("carve радиусом 60 не разрушает площадку базы",
+		terrain.class_at(probe) == TerrainPalette.Cls.INDESTRUCTIBLE,
+		"класс после carve=%d" % terrain.class_at(probe))
+	terrain.queue_free()
