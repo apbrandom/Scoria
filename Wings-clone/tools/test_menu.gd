@@ -39,10 +39,18 @@ func _run() -> void:
 	var main_buttons: Control = menu.get_node("%MainButtons")
 	var mode_buttons: Control = menu.get_node("%ModeButtons")
 	var net_buttons: Control = menu.get_node("%NetButtons")
+	var dev_button: Control = menu.get_node("%DevButton")
+	var dev_buttons: Control = menu.get_node("%DevButtons")
 
 	_check("после _ready() виден MainButtons", main_buttons.visible)
 	_check("ModeButtons скрыт изначально", not mode_buttons.visible)
 	_check("NetButtons скрыт изначально", not net_buttons.visible)
+	_check("DevButtons скрыт изначально", not dev_buttons.visible)
+	# headless-запуск здесь — это debug-сборка (запускается движком без экспорта,
+	# см. шапку main_menu.gd про OS.has_feature("debug")), поэтому кнопка обязана
+	# быть видна — иначе тест не поймает, если условие видимости перевернули.
+	_check("кнопка «Разработка» видна в debug-сборке (headless — она же)",
+		dev_button.visible)
 
 	menu._on_play_pressed()
 	_check("Играть -> показывает ModeButtons", mode_buttons.visible)
@@ -59,6 +67,14 @@ func _run() -> void:
 	menu._on_back_pressed()
 	_check("Назад -> возврат к MainButtons", main_buttons.visible)
 	_check("Назад -> скрывает ModeButtons", not mode_buttons.visible)
+
+	menu._on_dev_pressed()
+	_check("Разработка -> показывает DevButtons", dev_buttons.visible)
+	_check("Разработка -> скрывает MainButtons", not main_buttons.visible)
+
+	menu._on_dev_back_pressed()
+	_check("Назад (из разработки) -> возврат к MainButtons", main_buttons.visible)
+	_check("Назад (из разработки) -> скрывает DevButtons", not dev_buttons.visible)
 
 	# Запись в GameRules проверяем через _set_*() — НЕ через полные
 	# _on_*_pressed(). Первая попытка так и была написана "в лоб" и вскрыла
@@ -89,5 +105,14 @@ func _run() -> void:
 	menu._set_join_role()
 	_check("Присоединиться -> GameRules.net_forced_role = \"join\"", GameRules.net_forced_role == "join",
 		"net_forced_role=%s" % GameRules.net_forced_role)
+
+	# Симуляция ботов — это не отдельный игровой режим, а level.tscn с обоими
+	# кораблями под ИИ (путь GameRules.bot_count уже проверен tools/test_ai.gd);
+	# здесь проверяем только то, что действительно принадлежит меню — запись.
+	GameRules.reset()
+	menu._set_bot_simulation()
+	_check("Симуляция ботов -> player_count=2, bot_count=2",
+		GameRules.player_count == 2 and GameRules.bot_count == 2,
+		"player_count=%d bot_count=%d" % [GameRules.player_count, GameRules.bot_count])
 
 	GameRules.reset()

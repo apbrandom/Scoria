@@ -17,17 +17,29 @@
 ## расчёт на два окна ОДНОГО компьютера (Debug → Customize Run Instances →
 ## Enable Multiple Instances) — для другого адреса по-прежнему нужен CLI-флаг
 ## `-- --join=<ip>`, меню его не заменяет.
+##
+## Раздел «Разработка» (ниже) — служебные прогоны для заказчика/разработки,
+## В РЕЛИЗ НЕ ИДЁТ: кнопка скрыта в export-сборке release-шаблоном и видна
+## только в editor/debug-сборке (OS.has_feature("debug") — штатный тег Godot,
+## "Running on a debug build (including the editor)", истинен и в редакторе, и
+## в debug-экспорте, ложен только в release-шаблоне для настоящего релиза).
 extends Control
 
 const LEVEL_SCENE := "res://scenes/level/level.tscn"
 const NET_PLAYGROUND_SCENE := "res://scenes/level/net_playground.tscn"
+const SAND_PLAYGROUND_SCENE := "res://tools/sand_playground.tscn"
 
 @onready var _main_buttons: Control = %MainButtons
 @onready var _mode_buttons: Control = %ModeButtons
 @onready var _net_buttons: Control = %NetButtons
+@onready var _dev_button: Control = %DevButton
+@onready var _dev_buttons: Control = %DevButtons
 
 
 func _ready() -> void:
+	# Не visible=false в самой .tscn — тогда кнопка была бы скрыта и в
+	# editor/debug тоже, где её как раз и нужно видеть.
+	_dev_button.visible = OS.has_feature("debug")
 	_show_main()
 
 
@@ -95,19 +107,55 @@ func _on_exit_pressed() -> void:
 	get_tree().quit()
 
 
+func _on_dev_pressed() -> void:
+	_show_dev()
+
+
+func _on_dev_back_pressed() -> void:
+	_show_main()
+
+
+## Смотреть бой ботов — это НЕ отдельная сцена, а тот же боевой level.tscn с
+## обоими кораблями под ИИ: путь уже собран и проверен (GameRules.bot_count,
+## scripts/input/ai_input.gd, devlog §53), здесь только настройка перед
+## change_scene_to_file — тот же паттерн, что у остальных пунктов меню.
+func _on_bot_sim_pressed() -> void:
+	_set_bot_simulation()
+	get_tree().change_scene_to_file(LEVEL_SCENE)
+
+
+func _on_physics_sim_pressed() -> void:
+	get_tree().change_scene_to_file(SAND_PLAYGROUND_SCENE)
+
+
+func _set_bot_simulation() -> void:
+	GameRules.player_count = 2
+	GameRules.bot_count = 2
+
+
 func _show_main() -> void:
 	_main_buttons.visible = true
 	_mode_buttons.visible = false
 	_net_buttons.visible = false
+	_dev_buttons.visible = false
 
 
 func _show_modes() -> void:
 	_main_buttons.visible = false
 	_mode_buttons.visible = true
 	_net_buttons.visible = false
+	_dev_buttons.visible = false
 
 
 func _show_net() -> void:
 	_main_buttons.visible = false
 	_mode_buttons.visible = false
 	_net_buttons.visible = true
+	_dev_buttons.visible = false
+
+
+func _show_dev() -> void:
+	_main_buttons.visible = false
+	_mode_buttons.visible = false
+	_net_buttons.visible = false
+	_dev_buttons.visible = true

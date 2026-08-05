@@ -56,6 +56,12 @@ layout_mode = 2
 custom_minimum_size = Vector2(260, 48)
 text = "Выход"
 
+[node name="DevButton" type="Button" parent="Center/Root/MainButtons"]
+unique_name_in_owner = true
+layout_mode = 2
+custom_minimum_size = Vector2(260, 48)
+text = "Разработка"
+
 [node name="ModeButtons" type="VBoxContainer" parent="Center/Root"]
 unique_name_in_owner = true
 visible = false
@@ -111,8 +117,38 @@ layout_mode = 2
 custom_minimum_size = Vector2(300, 48)
 text = "Назад"
 
+[node name="DevButtons" type="VBoxContainer" parent="Center/Root"]
+unique_name_in_owner = true
+visible = false
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="Hint" type="Label" parent="Center/Root/DevButtons"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.8, 0.8, 0.8, 1)
+horizontal_alignment = 1
+text = "Служебные прогоны — в релизной сборке этого раздела нет"
+autowrap_mode = 2
+custom_minimum_size = Vector2(300, 0)
+
+[node name="BotSim" type="Button" parent="Center/Root/DevButtons"]
+layout_mode = 2
+custom_minimum_size = Vector2(300, 48)
+text = "Симуляция ботов"
+
+[node name="PhysicsSim" type="Button" parent="Center/Root/DevButtons"]
+layout_mode = 2
+custom_minimum_size = Vector2(300, 48)
+text = "Симуляция физики (песочница)"
+
+[node name="Back" type="Button" parent="Center/Root/DevButtons"]
+layout_mode = 2
+custom_minimum_size = Vector2(300, 48)
+text = "Назад"
+
 [connection signal="pressed" from="Center/Root/MainButtons/Play" to="." method="_on_play_pressed"]
 [connection signal="pressed" from="Center/Root/MainButtons/Exit" to="." method="_on_exit_pressed"]
+[connection signal="pressed" from="Center/Root/MainButtons/DevButton" to="." method="_on_dev_pressed"]
 [connection signal="pressed" from="Center/Root/ModeButtons/Single" to="." method="_on_single_pressed"]
 [connection signal="pressed" from="Center/Root/ModeButtons/LocalTwo" to="." method="_on_local_two_pressed"]
 [connection signal="pressed" from="Center/Root/ModeButtons/Network" to="." method="_on_network_pressed"]
@@ -120,3 +156,6 @@ text = "Назад"
 [connection signal="pressed" from="Center/Root/NetButtons/Host" to="." method="_on_host_pressed"]
 [connection signal="pressed" from="Center/Root/NetButtons/Join" to="." method="_on_join_pressed"]
 [connection signal="pressed" from="Center/Root/NetButtons/Back" to="." method="_on_net_back_pressed"]
+[connection signal="pressed" from="Center/Root/DevButtons/BotSim" to="." method="_on_bot_sim_pressed"]
+[connection signal="pressed" from="Center/Root/DevButtons/PhysicsSim" to="." method="_on_physics_sim_pressed"]
+[connection signal="pressed" from="Center/Root/DevButtons/Back" to="." method="_on_dev_back_pressed"]
