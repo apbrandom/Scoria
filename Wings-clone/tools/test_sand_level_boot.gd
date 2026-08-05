@@ -38,10 +38,15 @@ func _run() -> void:
 	GameRules.reset()
 	GameRules.player_count = 1
 
-	# Level._ready() выполняется целиком СИНХРОННО внутри add_child (см. тот же
-	# довод в test_menu.gd) — рельеф загружен и корабль заспавнен уже здесь.
+	# Level._ready() БОЛЬШЕ НЕ делает всю работу синхронно: сборка уровня
+	# растянута на кадры, чтобы показывать полосу загрузки (devlog §52).
+	# Ждём явного сигнала, а не угаданного числа кадров — иначе тест начнёт
+	# то проходить, то падать от скорости машины.
 	var level := LEVEL_SCENE.instantiate()
 	add_child(level)
+	if not level.is_world_ready():
+		await level.world_ready
+	_check("уровень сообщил о готовности (сигнал world_ready)", level.is_world_ready())
 
 	var terrain: Terrain = level.get_node("Terrain") if level.has_node("Terrain") else _find_terrain(level)
 	_check("Terrain реально создан", terrain != null)

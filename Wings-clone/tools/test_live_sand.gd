@@ -82,7 +82,7 @@ func _build() -> Dictionary:
 		sim.step()
 		guard += 1
 
-	var imgs = SAND_LEVEL_GEN._bake_images(sim, GRID.x, GRID.y, size, PALETTE, SEED, RULES)
+	var imgs = SAND_LEVEL_GEN.bake_images(sim, GRID.x, GRID.y, size, PALETTE, SEED, RULES)
 
 	var terrain := Terrain.new()
 	terrain.palette = PALETTE

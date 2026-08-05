@@ -1,0 +1,6 @@
+[gd_resource type="Resource" script_class="LoadingSettings" format=3]
+
+[ext_resource type="Script" path="res://resources/loading_settings.gd" id="1"]
+
+[resource]
+script = ExtResource("1")

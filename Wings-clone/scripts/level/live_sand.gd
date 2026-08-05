@@ -77,7 +77,8 @@ func setup(p_terrain: Terrain, p_sim, p_grid: Vector2i, p_cell_px: int,
 	if p_settings != null:
 		settings = p_settings
 
-	# +7 — та же соль, что в SandLevelGen._bake_images: иначе зерно не совпадёт.
+	# +7 — та же соль, что при запекании уровня (LevelBuildJob._begin_bake):
+	# иначе зерно свежей земли не совпадёт с запечённой при генерации.
 	_detail = SAND_LEVEL_GEN.detail_noise_bytes(p_detail_seed + 7, terrain.size)
 
 	_prev = PackedByteArray()

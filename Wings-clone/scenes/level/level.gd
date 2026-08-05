@@ -49,6 +49,16 @@ const LIVE_SAND_SCRIPT := preload("res://scripts/level/live_sand.gd")
 ## preload по пути — та же причина, что у остальных SCRIPT-констант выше.
 const BASE_ZONE_SCRIPT := preload("res://scripts/level/base_zone.gd")
 const BASE_DATA := preload("res://data/bases/common.tres")
+## preload по пути — та же причина, что у остальных SCRIPT-констант выше.
+const LEVEL_BUILD_JOB_SCRIPT := preload("res://scripts/level/level_build_job.gd")
+const LOADING_OVERLAY_SCRIPT := preload("res://scripts/level/loading_overlay.gd")
+const LOADING_SETTINGS := preload("res://data/level/loading.tres")
+
+## Доли двух этапов загрузки в общей полосе — по замеру tools/diag_load_cost.gd
+## (генерация+запекание 3135 мс, сборка Terrain и живого моста 692 мс).
+## Первый этап идёт порциями, второй — одним куском (см. _finish_build).
+const W_GENERATE := 0.82
+const W_WORLD := 0.18
 ## Широкий и плоский, не квадрат — "много открытого пространства" ложится
 ## лучше на широкий экран. Замерено (tools/, разово): 1800x900 -> 1.1с,
 ## 2700x1350 -> 2.1с, 5400x2700 -> 4.9с генерации SandLevelGen — рост терпимый
@@ -74,6 +84,19 @@ const ZOOM_WHEEL_STEP := 1.1
 const ZOOM_MULT_MIN := 0.5
 const ZOOM_MULT_MAX := 2.0
 
+## Уровень собран и играбелен: рельеф, корабли, базы, камера — всё на месте.
+## Нужен headless-тестам, которые раньше полагались на то, что _ready() делает
+## всю работу синхронно (см. tools/test_sand_level_boot.gd): теперь сборка
+## растянута на несколько кадров, и «когда готово» обязано быть явным событием,
+## а не угаданным числом кадров ожидания.
+signal world_ready
+
+## Этап загрузки. GENERATE идёт порциями (полоса едет), WORLD — один неделимый
+## кусок работы с деревом сцены и текстурами: его нельзя ни порезать, ни унести
+## в поток, поэтому подпись под полосой меняем ЗАРАНЕЕ, кадром раньше самой
+## работы — иначе заказчик увидит замерший экран без объяснения, что происходит.
+enum Stage { GENERATE, WORLD_ANNOUNCED, WORLD, DONE }
+
 var _palette: TerrainPalette
 var _terrain: Terrain
 var _match: MatchManager
@@ -87,6 +110,17 @@ var _debug: TerrainDebugDraw
 ## Живая клеточная физика рельефа (scripts/level/live_sand.gd) — null, если
 ## выключена в data/sand/live_sand.tres.
 var _live_sand: Node = null
+
+var _stage := Stage.GENERATE
+## Типы намеренно базовые (RefCounted/CanvasLayer), а не LevelBuildJob/
+## LoadingOverlay: голый class_name свежего скрипта не резолвится headless-
+## запуском, пока не пересобран .godot/global_script_class_cache.cfg, а он не
+## под контролем версий — на второй машине тесты падали бы на разборе файла до
+## того, как что-то успеет выполниться. Та же причина, что у _live_sand ниже и
+## у всех SCRIPT-констант выше.
+var _job: RefCounted
+var _overlay: CanvasLayer
+var _load_started_msec := 0
 
 
 func _ready() -> void:
@@ -109,7 +143,23 @@ func _ready() -> void:
 	var requested_seed := GameRules.level_seed
 	if requested_seed == 0:
 		requested_seed = randi_range(1, 0x7FFFFFFF)
-	var lvl := SAND_LEVEL_GEN_SCRIPT.generate(SAND_LEVEL_SIZE, requested_seed, _palette)
+
+	# Сборка уровня стоит несколько секунд (замер: tools/diag_load_cost.gd), и
+	# раньше она шла прямо здесь — окно всё это время не перерисовывалось, что
+	# заказчик читал как «игра зависла». Теперь _ready() только ЗАВОДИТ сборку,
+	# а крутит её _process() порциями, показывая полосу (см. _advance_build).
+	_overlay = LOADING_OVERLAY_SCRIPT.new()
+	add_child(_overlay)
+	_load_started_msec = Time.get_ticks_msec()
+	_job = LEVEL_BUILD_JOB_SCRIPT.new()
+	_job.setup(SAND_LEVEL_SIZE, requested_seed, _palette)
+
+
+## Вторая половина прежнего _ready(): собственно постройка мира из готового
+## результата генератора. Один неделимый кусок — трогает дерево сцены, текстуры
+## и физику, порезать его на кадры нельзя (полусобранный уровень нельзя ни
+## показать, ни отдать MatchManager).
+func _build_world(lvl: Dictionary) -> void:
 	GameRules.level_seed_used = lvl["seed_used"]
 	var vis: Image = lvl["visual"]
 	var msk: Image = lvl["mask"]
@@ -191,6 +241,51 @@ func _ready() -> void:
 	_hud = HUD_LABEL_SCRIPT.build(self)
 
 
+## Крутит сборку уровня по кадрам, пока она не закончится. Бюджет кадра — из
+## data/level/loading.tres: сколько миллисекунд отдавать работе, чтобы на
+## отрисовку самого экрана загрузки ещё оставалось.
+func _advance_build() -> void:
+	match _stage:
+		Stage.GENERATE:
+			var budget := int(LOADING_SETTINGS.frame_budget_msec * 1000.0)
+			_job.step(budget)
+			_overlay.set_progress(_job.progress() * W_GENERATE, _job.phase_text())
+			if _job.is_done():
+				_stage = Stage.WORLD_ANNOUNCED
+		Stage.WORLD_ANNOUNCED:
+			# Кадр только на то, чтобы подпись успела нарисоваться ДО начала
+			# неделимой работы: сама она займёт ~0.6 с без единой перерисовки,
+			# и без предупреждения это выглядело бы как зависание в конце.
+			_overlay.set_progress(W_GENERATE, "Сборка рельефа и коллизии")
+			_stage = Stage.WORLD
+		Stage.WORLD:
+			_build_world(_job.result())
+			_job = null
+			_overlay.set_progress(1.0, "Готово")
+			_stage = Stage.DONE
+			_finish_loading()
+
+
+## Снимает экран загрузки. Отдельно от _build_world, потому что мир может быть
+## готов раньше, чем истекло минимальное время показа (loading.tres) — на
+## быстрой машине экран иначе мигнул бы на пару кадров.
+func _finish_loading() -> void:
+	var elapsed := (Time.get_ticks_msec() - _load_started_msec) / 1000.0
+	var wait := LOADING_SETTINGS.min_visible_sec - elapsed
+	if wait > 0.0:
+		await get_tree().create_timer(wait).timeout
+	if _overlay != null:
+		_overlay.queue_free()
+		_overlay = null
+	world_ready.emit()
+
+
+## Уровень собран и играбелен. Тестам и внешнему коду — вместо угадывания
+## числа кадров ожидания (см. сигнал world_ready).
+func is_world_ready() -> bool:
+	return _stage == Stage.DONE and _overlay == null
+
+
 ## Невидимые стены по периметру (0,0)-(size) — не дают кораблю физически
 ## улететь за пределы уровня. Независимо от того, что генерирует сам рельеф
 ## (SandLevelGen кладёт камень по бокам/низу, но НЕ над открытым небом — там
@@ -219,6 +314,9 @@ func _add_wall(parent: StaticBody2D, center: Vector2, extent: Vector2) -> void:
 
 
 func _process(_delta: float) -> void:
+	if _stage != Stage.DONE:
+		_advance_build()
+		return
 	_update_camera()
 	_update_hud()
 
@@ -227,12 +325,16 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
 		match event.keycode:
 			KEY_R:
-				if _match.is_match_over():
+				# Пока уровень собирается, _match ещё не существует. Выход в
+				# меню при этом обязан работать: заставший загрузку игрок не
+				# должен оказаться запертым в ней.
+				if _match != null and _match.is_match_over():
 					_match.restart_match()
 			KEY_F1:
-				_debug.visible = not _debug.visible
-				if _debug.visible:
-					_debug.refresh()
+				if _debug != null:
+					_debug.visible = not _debug.visible
+					if _debug.visible:
+						_debug.refresh()
 			KEY_ESCAPE:
 				get_tree().change_scene_to_file(MENU_SCENE)
 	elif event is InputEventMouseButton and event.pressed:

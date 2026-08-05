@@ -68,37 +68,37 @@ const SEED_ATTEMPT_STEP := 7919
 ## "attempts" — сколько попыток seed'а сделано всего (не порядковый номер
 ## выбранной), "seed_used" — seed того уровня, который в итоге отдан.
 static func build_settled_sim(size: Vector2i, rng_seed: int, rules = null) -> Dictionary:
-	if rules == null:
-		rules = DEFAULT_RULES
+	var job = _new_job()
+	# palette == null — только осевшая симуляция, без запекания картинок.
+	job.setup(size, rng_seed, null, rules)
+	job.step(0)
+	return job.sim_result()
 
-	var best: Dictionary = {}
-	var best_score := -1.0
-	# Явные типы, а не := — `rules` намеренно без аннотации типа (см. шапку про
-	# class_name), поэтому вывести тип из его поля компилятор не может.
-	var attempts: int = rules.max_attempts
 
-	for i in attempts:
-		var seed_i: int = rng_seed + i * SEED_ATTEMPT_STEP
-		var built := _build_once(size, seed_i, rules)
-		var report: Dictionary = _evaluate(built["sim"], built["grid"], rules)
-		built["seed_used"] = seed_i
-		built["attempts"] = i + 1
-		built["report"] = report
-		if report["ok"]:
-			return _place_bases(built, rules)
-		# Не сошлось — запоминаем лучший из отвергнутых. Загрузка уровня не
-		# должна падать из-за неудачной случайности: чуть менее удачный рельеф
-		# лучше, чем чёрный экран (см. шапку файла).
-		if report["score"] > best_score:
-			best_score = report["score"]
-			best = built
+## Сам перебор seed'ов и запекание живут в LevelBuildJob — он умеет то же самое
+## ПОРЦИЯМИ, чтобы окно не висело мёртвым на время загрузки (см. шапку того
+## файла). Здесь — синхронная обёртка: тот же job, прокрученный без ограничения
+## бюджета. Второй копии алгоритма нет: обе дороги ведут через один код.
+##
+## load() в рантайме, а не preload: job сам подгружает этот файл (ему нужны
+## _build_once/_evaluate/color_of), и встречный preload замкнул бы цикл, который
+## GDScript не разбирает. К моменту вызова этот скрипт уже скомпилирован, а
+## ResourceLoader держит job в кэше — цена повторных вызовов нулевая.
+static func _new_job():
+	return load("res://scripts/level/level_build_job.gd").new()
 
-	# "attempts" везде означает СКОЛЬКО ПОПЫТОК СДЕЛАНО, а не на какой из них
-	# остановились: в ветке выше это одно и то же (вышли сразу, как нашли), а
-	# здесь перебор дошёл до конца, и лучший кандидат мог оказаться не последним.
-	# Без этой строки поле молча значило бы разное в двух ветках одной функции.
-	best["attempts"] = attempts
-	return _place_bases(best, rules)
+
+## Запекание ГОТОВОЙ сетки в visual/mask — для кода, который собрал симуляцию
+## сам (tools/test_live_sand.gd выкладывает уровень руками, чтобы проверяемая
+## ситуация была воспроизводимой). Боевой путь сюда не ходит: там запекание
+## идёт порциями внутри job'а вместе с генерацией.
+static func bake_images(sim, grid_w: int, grid_h: int, output_size: Vector2i,
+		palette: TerrainPalette, rng_seed: int, rules = null) -> Dictionary:
+	var job = _new_job()
+	job.setup_bake(sim, Vector2i(grid_w, grid_h), output_size, palette, rng_seed, rules)
+	job.step(0)
+	var out: Dictionary = job.result()
+	return {"visual": out["visual"], "mask": out["mask"]}
 
 
 ## Впечатывает площадки под базы и кладёт в результат "bases" — МИРОВЫЕ
@@ -515,26 +515,20 @@ static func _stamp_base_platform(sim, grid: Vector2i, spot: Vector2i, rules) -> 
 			sim.set_cell(x, y, STONE_ID)
 
 
-# ---------------------------------------------------------------- запекание
+# ------------------------------------------------- вход и правила окраски
+#
+# Сам разворот сетки в пиксели живёт в LevelBuildJob (порциями) — здесь
+# остались правила «клетка -> класс» и «класс -> цвет», общие для запекания
+# при генерации и для перекраски осыпавшихся клеток в геймплее (live_sand.gd).
 
 ## Возвращает {"visual": Image, "mask": Image}, как и TestLevelGen.generate(),
 ## плюс "sim"/"grid"/"seed_used"/"report" — их берут живой мост (live_sand.gd) и
 ## диагностика; вызывающие, которым нужны только картинки, игнорируют лишние ключи.
 static func generate(size: Vector2i, rng_seed: int, palette: TerrainPalette, rules = null) -> Dictionary:
-	if rules == null:
-		rules = DEFAULT_RULES
-	var built := build_settled_sim(size, rng_seed, rules)
-	var sim = built["sim"]
-	var grid: Vector2i = built["grid"]
-
-	var out := _bake_images(sim, grid.x, grid.y, size, palette, built["seed_used"], rules)
-	out["sim"] = sim
-	out["grid"] = grid
-	out["seed_used"] = built["seed_used"]
-	out["attempts"] = built["attempts"]
-	out["report"] = built["report"]
-	out["bases"] = built["bases"]
-	return out
+	var job = _new_job()
+	job.setup(size, rng_seed, palette, rules)
+	job.step(0)
+	return job.result()
 
 
 ## Клетка SandSim -> класс рельефа Terrain. SAND -> SOFT ("рыхлое", рвётся
@@ -570,7 +564,7 @@ static func detail_noise_bytes(rng_seed: int, size: Vector2i) -> PackedByteArray
 
 
 ## Цвет одного пикселя рельефа по классу материала и значению детального шума.
-## Вынесено из _bake_images отдельной функцией, потому что ЖИВОЙ мост
+## Отдельной функцией, а не строкой внутри запекания, потому что ЖИВОЙ мост
 ## (live_sand.gd) перекрашивает изменившиеся клетки в геймплее и обязан красить
 ## их ТЕМ ЖЕ правилом — иначе осыпавшаяся земля отличалась бы по цвету от
 ## нетронутой, и место обвала читалось бы как заплатка.
@@ -594,57 +588,3 @@ static func color_of(cls: int, detail: int) -> Color:
 				clampi(46 + (d >> 4), 0, 255), 255)
 
 
-## Разворачивает осевшую сетку SandSim в пиксельные Image (visual+mask) в
-## разрешении output_size — каждая клетка становится блоком cell_px×cell_px,
-## но цвет пикселя внутри блока модулируется шумом (см. _detail_noise_bytes),
-## не одна плоская заливка на весь блок.
-static func _bake_images(sim, grid_w: int, grid_h: int, output_size: Vector2i,
-		palette: TerrainPalette, rng_seed: int, rules) -> Dictionary:
-	var cell_px: int = rules.cell_px
-	var w := output_size.x
-	var h := output_size.y
-	var vis := PackedByteArray(); vis.resize(w * h * 4)
-	var msk := PackedByteArray(); msk.resize(w * h * 4)
-	# +7 — отдельная соль от seed, который уже занят height_noise (rng_seed) и
-	# patch_noise (rng_seed+1) в _carve_initial_terrain — не тот же узор шума.
-	var detail := detail_noise_bytes(rng_seed + 7, output_size)
-
-	var mr := PackedByteArray(); mr.resize(TerrainPalette.CLASS_COUNT)
-	var mg := PackedByteArray(); mg.resize(TerrainPalette.CLASS_COUNT)
-	var mb := PackedByteArray(); mb.resize(TerrainPalette.CLASS_COUNT)
-	for cls in TerrainPalette.CLASS_COUNT:
-		var v: int = palette.mask_rgb[cls]
-		mr[cls] = (v >> 16) & 0xFF
-		mg[cls] = (v >> 8) & 0xFF
-		mb[cls] = v & 0xFF
-
-	for gy in grid_h:
-		var py0 := gy * cell_px
-		var block_h := mini(cell_px, h - py0)
-		if block_h <= 0:
-			continue
-		for gx in grid_w:
-			var px0 := gx * cell_px
-			var block_w := mini(cell_px, w - px0)
-			if block_w <= 0:
-				continue
-			var cls := cls_of(sim.get_cell(gx, gy))
-			var mask_r: int = mr[cls]
-			var mask_g: int = mg[cls]
-			var mask_b: int = mb[cls]
-			for oy in block_h:
-				var row := (py0 + oy) * w
-				for ox in block_w:
-					var pi := row + px0 + ox
-					var c := color_of(cls, detail[pi])
-					var o := pi * 4
-					vis[o] = int(c.r8)
-					vis[o + 1] = int(c.g8)
-					vis[o + 2] = int(c.b8)
-					vis[o + 3] = int(c.a8)
-					msk[o] = mask_r; msk[o + 1] = mask_g; msk[o + 2] = mask_b; msk[o + 3] = 255
-
-	return {
-		"visual": Image.create_from_data(w, h, false, Image.FORMAT_RGBA8, vis),
-		"mask": Image.create_from_data(w, h, false, Image.FORMAT_RGBA8, msk),
-	}
