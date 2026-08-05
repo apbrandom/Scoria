@@ -67,7 +67,12 @@ func _detonate() -> void:
 	exp.blast_radius = weapon.blast_radius
 	exp.terrain_power = weapon.terrain_power
 	exp.damage = weapon.damage
-	exp.shooter = shooter
+	# Снаряд может пережить того, кто его выпустил (корабль убрали со сцены, пока
+	# пуля летела — например, игрок отвалился по сети). Присваивание освобождённой
+	# ссылки роняло бы взрыв ошибкой; null здесь — корректный смысл «засчитывать
+	# килл некому», и его уже умеют и Explosion.shooter, и Ship.take_damage.
+	# Найдено ботами: tools/test_ai.gd освобождает корабли, пока снаряды в полёте.
+	exp.shooter = shooter if is_instance_valid(shooter) else null
 	get_parent().add_child(exp)
 	queue_free()
 

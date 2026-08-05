@@ -53,6 +53,12 @@ const BASE_DATA := preload("res://data/bases/common.tres")
 const LEVEL_BUILD_JOB_SCRIPT := preload("res://scripts/level/level_build_job.gd")
 const LOADING_OVERLAY_SCRIPT := preload("res://scripts/level/loading_overlay.gd")
 const LOADING_SETTINGS := preload("res://data/level/loading.tres")
+## preload по пути — та же причина, что у остальных SCRIPT-констант выше.
+const AI_INPUT_SCRIPT := preload("res://scripts/input/ai_input.gd")
+## Разнос seed'ов между ботами одного матча. Простое число, а не +1: соседние
+## seed'ы дают заметно похожую последовательность, и два бота дрожали бы
+## прицелом почти одинаково (тот же довод, что у SEED_ATTEMPT_STEP в генераторе).
+const AI_SEED_STEP := 7919
 
 ## Доли двух этапов загрузки в общей полосе — по замеру tools/diag_load_cost.gd
 ## (генерация+запекание 3135 мс, сборка Terrain и живого моста 692 мс).
@@ -215,16 +221,36 @@ func _build_world(lvl: Dictionary) -> void:
 
 	# Позиция выставляется ДО add_child, как и раньше у одного корабля — спавны
 	# теперь считает MatchManager (с разнесением, чтобы не родиться друг на друге).
+	# Боты занимают места С КОНЦА списка: при player_count=2 и bot_count=1 первый
+	# корабль остаётся за клавиатурой P1, а вторым правит ИИ. Так «играть против
+	# бота» и «смотреть бой двух ботов» — одна и та же настройка, а не два режима.
+	var bot_count := clampi(GameRules.bot_count, 0, player_count)
+	var first_bot := player_count - bot_count
+
 	var spawns := _match.pick_spawns(player_count)
 	for i in player_count:
 		var ship: Ship = SHIP_SCENE.instantiate()
 		ship.data = SHIP_DATA
 		ship.primary_weapon = DUMBFIRE_DATA
 		ship.secondary_weapon = BOMB_DATA
-		ship.input = LocalInput.new(i + 1)
+		if i >= first_bot:
+			# Seed бота — от seed'а уровня: тогда воспроизводится не только
+			# рельеф, но и весь бой на нём (ради этого боты и делались).
+			# Смещение по индексу — иначе оба бота на одном уровне получили бы
+			# одинаковое дрожание прицела и вели себя как близнецы.
+			ship.input = AI_INPUT_SCRIPT.new(GameRules.level_seed_used + i * AI_SEED_STEP)
+		else:
+			ship.input = LocalInput.new(i + 1)
 		ship.position = spawns[i]
 		add_child(ship)
 		_ships.append(ship)
+
+	# Список противников известен только когда заспавнены ВСЕ — поэтому боты
+	# доводятся отдельным проходом, а не в цикле выше.
+	for ship in _ships:
+		if ship.input is AIInput:
+			ship.input.setup(ship, _ships, _terrain)
+
 	_match.setup(_ships)
 
 	add_child(GLOW_ENV_SCRIPT.build())

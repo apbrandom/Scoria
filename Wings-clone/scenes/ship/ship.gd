@@ -361,7 +361,17 @@ func _die(killer: Node = null) -> void:
 	destroyed.emit(killer)
 	_thrust.emitting = false
 	# взрыв/обломки корабля — позже (notes/roadmap.md); пока просто убираем со сцены
-	freeze = true
+	#
+	# set_deferred, а НЕ freeze = true напрямую: смерть от взрыва приходит по
+	# цепочке Projectile._on_body_entered -> Explosion._ready -> take_damage, то
+	# есть внутри разбора физических запросов, а менять там режим тела нельзя —
+	# движок отвергает вызов с "Can't change this state while flushing queries",
+	# и корабль остаётся НЕзамороженным: невидимый труп продолжает летать,
+	# сталкиваться и рыть рельеф до самого респавна. Найдено ареной ботов
+	# (tools/diag_arena.gd), где взрывные килы наконец стали массовыми — прежние
+	# тесты убивали корабль прямым вызовом take_damage и в эту ветку не попадали.
+	# Тот же класс граблей уже ловился на carve из физ-колбэка (devlog §21).
+	set_deferred("freeze", true)
 	visible = false
 
 

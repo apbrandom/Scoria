@@ -72,6 +72,13 @@ var win_condition: int = WIN_KILLS
 ## один локальный + один по сети).
 var player_count: int = 2
 
+## Сколько из этих кораблей ведёт БОТ (scripts/input/ai_input.gd), считая с
+## конца: 0 — все живые, 1 при player_count=2 — «человек против бота»,
+## 2 — бой двух ботов (ради него это и делалось: заказчику нужно СМОТРЕТЬ и
+## мерить сражение, а не участвовать в нём). Clamp'ится по player_count в
+## level.gd — значение больше числа кораблей не ошибка, а просто «все боты».
+var bot_count: int = 0
+
 ## Seed рельефа уровня. 0 — разыграть случайный при заходе в уровень (каждый
 ## матч — новый рельеф в пределах правил LevelGenRules); любое другое число —
 ## жёстко зафиксировать конкретный уровень.
@@ -115,6 +122,7 @@ func reset() -> void:
 	kills_per_level = 10
 	win_condition = WIN_KILLS
 	player_count = 2
+	bot_count = 0
 	level_seed = 0
 	level_seed_used = 0
 	net_forced_role = "auto"

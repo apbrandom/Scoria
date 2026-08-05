@@ -29,7 +29,7 @@
 | **Рельеф и материалы** | `scenes/level/terrain{,_chunk}.gd`, `resources/terrain_palette.gd`, `notes/terrain_materials.md`, `scripts/sand/sand_sim.gd`, `scripts/level/{sand_level_gen,live_sand}.gd`, `resources/{level_gen_rules,live_sand_settings}.gd` | **Нет** | **Сеть** — детерминизм carve, самая тесная связь во всём проекте (§2, «Сеть: модель синхронизации» ниже); **GameRules** — `level_seed`/`level_seed_used` (§5) |
 | **Матч и правила** | `scripts/match/match_manager.gd`, `autoload/game_rules.gd` | Частично | `Ship` (слушает `destroyed`), `Terrain` (`pick_spawns` → `find_clear_spawn`) |
 | **Сеть** | `scripts/net/` (`network_manager.gd`, `ship_input_sync.gd`, `terrain_net_sync.gd`), `scripts/input/remote_input.gd` | Нет | **Рельеф** — carve реплицируется событием, реализовано (devlog §48); `Ship` — позиция/угол через `MultiplayerSynchronizer` (devlog §25) |
-| **Боты** | `scripts/input/ai_input.gd` (будущий) | Да | только интерфейс `ShipInput`, ничего больше |
+| **Боты** | `scripts/input/ai_input.gd` | Да | только интерфейс `ShipInput` + чтение рельефа и позиций противников; в `Ship` не потребовалось правок (devlog §53) |
 | **Левел-дизайн / ген. уровней** | `levels/`, будущий генератор по биому/размеру | Почти | потребляет формат `TerrainPalette`, не лезет в carve-логику |
 | **Арт / UI** | `scenes/ui/`, спрайты, HUD | Да | ничего структурно — чистое представление |
 
@@ -226,7 +226,12 @@ if input.thrust:
 - `LocalInput` — читает `InputMap`-экшены `p{N}_thrust` / `p{N}_left` / … (8 игроков × 5
   действий = 40 экшенов, ровно как 8 наборов клавиш в `KEYS.DAT` оригинала).
   Хотсит на одной клавиатуре — это штатный `InputMap`, ничего своего.
-- `AIInput` — позже (в оригинале есть Computer-игроки).
+- `AIInput` — бот (`scripts/input/ai_input.gd`, devlog §53). **Сделан**, и в
+  `Ship` не понадобилось ни строчки — шов сработал ровно так, как задумывался.
+  Свой, а не готовое дерево поведения: тяжёлое в этой игре не выбор ветки, а
+  управление — тяга и прицел жёстко связаны ОДНИМ углом, нос нельзя направить
+  на врага и одновременно держаться в воздухе (полный разбор вариантов, включая
+  лицензии LimboAI/Beehave и почему не годится навигация Godot, — devlog §53.1).
 - `RemoteInput` — позже; тогда на корабль вешается `MultiplayerSynchronizer`,
   а сервер получает интенты по RPC. Переписывать `Ship` не придётся.
 
