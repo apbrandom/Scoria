@@ -776,10 +776,13 @@ func find_clear_spawn(radius: int, margin: int = 0, attempts: int = 30) -> Vecto
 	var y1 := maxi(size.y - margin - radius - 1, y0)
 	for _i in attempts:
 		var p := Vector2i(randi_range(x0, x1), randi_range(y0, y1))
-		if not _has_unmovable_solid(p, radius):
-			carve_circle(p, radius)
-			flush_dirty()
-			return p
+		if _has_unmovable_solid(p, radius):
+			continue
+		if _has_fallable_mass_above(p, radius):
+			continue
+		carve_circle(p, radius)
+		flush_dirty()
+		return p
 	return Vector2i(-1, -1)
 
 
@@ -805,6 +808,41 @@ func _has_unmovable_solid(center: Vector2i, radius: int) -> bool:
 			var c := _class[row + x]
 			if solid[c] != 0 and carvable[c] == 0:
 				return true
+	return false
+
+
+## Регрессия на баг "спавн в текстуре" (devlog §55): find_clear_spawn мог
+## легально выбрать точку ГЛУБОКО под землёй (сам по себе он проверяет только
+## отсутствие Камня в радиусе, не то, что над точкой открытое небо) — до
+## LiveSand это было безобидно (статичная пещера), а с живой физикой
+## (live_sand.gd, слушает Terrain.carved) земля/песок/вода над свежей воронкой
+## тут же теряют опору и обваливаются обратно, замуровывая корабль в коллизию.
+## Воспроизведено tools/diag_spawn_bug.gd: 6 из 12 случайных заходов.
+##
+## Проверяем СТРОГО столбец НАД будущей воронкой (от её верхней кромки до
+## верха уровня), а не сам круг — то, что внутри круга, и так расчистит
+## carve_circle. Камень (INDESTRUCTIBLE) безопасен сам по себе — он никогда не
+## падает (SandMaterial.falls=false у stone.tres), поэтому пропускать его
+## нельзя было бы иначе точки под сплошной скалой (обычный потолок пещеры)
+## отбраковывались бы без всякой причины.
+func _has_fallable_mass_above(center: Vector2i, radius: int) -> bool:
+	var empty := TerrainPalette.Cls.EMPTY
+	var indestructible := TerrainPalette.Cls.INDESTRUCTIBLE
+	var x0 := maxi(center.x - radius, 0)
+	var x1 := mini(center.x + radius, size.x - 1)
+	var y1 := center.y - radius  # верхняя кромка круга, не включена
+	# Шаг сканирования — с запасом мельче клетки LiveSand (6px, см. live_sand.gd),
+	# чтобы не проскочить узкий свес породы между двумя опрошенными точками.
+	var step := 4
+	var x := x0
+	while x <= x1:
+		var y := 0
+		while y < y1:
+			var c := _class[y * size.x + x]
+			if c != empty and c != indestructible:
+				return true
+			y += step
+		x += step
 	return false
 
 

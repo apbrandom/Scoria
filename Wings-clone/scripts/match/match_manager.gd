@@ -113,8 +113,14 @@ func _pick_spawn_away_from(avoid: Array[Vector2]) -> Vector2:
 func _pick_spawn_raw() -> Vector2:
 	var p := terrain.find_clear_spawn(spawn_clear_radius, spawn_margin)
 	if p == Vector2i(-1, -1):
-		push_warning("Не нашлось чистого места для спавна — беру центр уровня")
-		p = terrain.size / 2
+		# Верх карты, а не геометрический центр: генератор уровня гарантирует
+		# открытое небо у верхней кромки как инвариант играбельности
+		# (SandLevelGen._evaluate — "рельеф не упирается в потолок"), а центр
+		# по вертикали мог оказаться в толще земли — ровно тот же баг "спавн в
+		# текстуре" (devlog §55), который find_clear_spawn теперь отбраковывает
+		# сам, но этот fallback идёт В ОБХОД него.
+		push_warning("Не нашлось чистого места для спавна — беру верх уровня")
+		p = Vector2i(terrain.size.x / 2, spawn_margin + spawn_clear_radius)
 		terrain.carve_circle(p, spawn_clear_radius)
 		terrain.flush_dirty()
 	return Vector2(p)

@@ -318,7 +318,13 @@ func _run() -> void:
 	spawn_terrain.load_level(spawn_vis, spawn_mask)
 	await _step(1)
 
-	var found := spawn_terrain.find_clear_spawn(20, 10)
+	# attempts поднят с дефолтных 30 до 300: с фиксом "открытое небо над точкой"
+	# (devlog §55) в ЭТОЙ конкретной картинке безопасна только узкая полоса y
+	# в районе границы Камень/Земля (~20 px из 240 возможных) — с 30 попытками
+	# тест был бы честно, но заметно (~7%) флейки; 300 делает это пренебрежимо
+	# редким, не трогая дефолт в боевом коде (там реальный уровень, а не
+	# синтетическая сплошная плита, и открытого неба на порядки больше).
+	var found := spawn_terrain.find_clear_spawn(20, 10, 300)
 	_check("find_clear_spawn нашёл место", found != Vector2i(-1, -1), "found=%s" % found)
 	if found != Vector2i(-1, -1):
 		_check("найденное место не в Камне (y >= 150)", found.y >= 150, "found=%s" % found)
@@ -327,6 +333,16 @@ func _run() -> void:
 			if spawn_terrain.is_solid_at(found + offset):
 				clear = false
 		_check("вокруг найденного места нет твёрдого", clear, "found=%s" % found)
+		# Регрессия devlog §55 ("спавн в текстуре"): над найденной точкой не
+		# должно висеть НЕСДВИНУТОЙ Земли — иначе LiveSand обрушит её обратно
+		# в свежую воронку через несколько тиков (см. tools/test_spawn_safety).
+		var overhang := false
+		var y := 0
+		while y < found.y - 20:
+			if spawn_terrain.class_at(Vector2i(found.x, y)) == TerrainPalette.Cls.NORMAL:
+				overhang = true
+			y += 4
+		_check("над найденным местом нет нависающей Земли", not overhang, "found=%s" % found)
 	# Terrain._ready() сам добавляет себя в группу "terrain" (см. terrain.gd) —
 	# spawn_terrain никогда явно add_to_group() не звал (find_clear_spawn() группу
 	# не использует), но авто-вступление всё равно случилось. Не уходим —
@@ -806,3 +822,24 @@ func _run() -> void:
 	_check("find_clear_spawn на сплошном Камне возвращает \"не нашлось\" (-1,-1)",
 		not_found == Vector2i(-1, -1), "found=%s" % not_found)
 	solid_terrain.remove_from_group("terrain")
+
+	# 18. Регрессия devlog §55 ("спавн в текстуре"): терраин целиком Земля, без
+	#     единого просвета открытого неба нигде в адресуемом диапазоне — ДО
+	#     фикса find_clear_spawn с радостью закарвил бы пузырь в этой толще и
+	#     вернул "успех"; теперь обязан честно сдаться, а не вернуть точку,
+	#     которую LiveSand тут же обрушит обратно на корабль.
+	var earth_terrain := Terrain.new()
+	earth_terrain.palette = PALETTE
+	earth_terrain.position = Vector2(600000, 600000)
+	add_child(earth_terrain)
+	var earth_vis := Image.create(200, 200, false, Image.FORMAT_RGBA8)
+	earth_vis.fill(Color(0.5, 0.5, 0.5, 1.0))
+	var earth_mask := Image.create(200, 200, false, Image.FORMAT_RGBA8)
+	earth_mask.fill(PALETTE.get_mask_color(TerrainPalette.Cls.NORMAL))
+	earth_terrain.load_level(earth_vis, earth_mask)
+	await _step(1)
+
+	var buried := earth_terrain.find_clear_spawn(20, 10, 5)
+	_check("find_clear_spawn в сплошной Земле без просвета неба тоже сдаётся (-1,-1)",
+		buried == Vector2i(-1, -1), "found=%s" % buried)
+	earth_terrain.remove_from_group("terrain")

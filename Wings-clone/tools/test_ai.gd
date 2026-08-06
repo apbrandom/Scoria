@@ -108,6 +108,8 @@ func _run() -> void:
 	await _test_deterministic()
 	await _test_no_target()
 	await _test_aim_math()
+	await _test_fov()
+	await _test_memory()
 	GameRules.reset()
 
 
@@ -138,6 +140,12 @@ func _test_fights() -> void:
 	var b := _make_bot(Vector2(950, GROUND_Y - 260), 22)
 	var bots := [a, b] as Array[Ship]
 	_wire(bots)
+	# Носом друг на друга с самого начала: оба на одной высоте, обзор ±45°
+	# (devlog §55) от носа по умолчанию (aim_angle=0, "вверх") иначе не
+	# гарантирует мгновенное обнаружение — тест про сам БОЙ, а не про то,
+	# сколько секунд уйдёт на первичное обнаружение с произвольного старта.
+	a.aim_angle = AI_INPUT._angle_of((b.global_position - a.global_position).normalized())
+	b.aim_angle = AI_INPUT._angle_of((a.global_position - b.global_position).normalized())
 
 	var hull_a0 := a.hull
 	var hull_b0 := b.hull
@@ -211,19 +219,89 @@ func _test_deterministic() -> void:
 
 
 ## Соло-матч и «все противники мертвы» — бот без цели не должен ни падать
-## камнем, ни палить в пустоту.
+## камнем, ни палить в пустоту, а по прямой просьбе заказчика (devlog §55) —
+## реально патрулировать: облетать карту, а не висеть статуей.
 func _test_no_target() -> void:
 	print("\n-- бот без противника --")
 	await _build_terrain()
 	var lone := _make_bot(Vector2(600, GROUND_Y - 200), 3)
 	_wire([lone] as Array[Ship])
+	var x0 := lone.global_position.x
 
 	await _step(60 * 6)
 
 	_check("одинокий бот жив", lone.is_alive(), "y=%.0f" % lone.global_position.y)
 	_check("не стреляет в пустоту", _projectile_count() == 0,
 		"снарядов: %d" % _projectile_count())
+	# Патрулирование, а не глушняк на месте: за 6 секунд без цели бот обязан
+	# заметно сместиться по X (не микро-дрожь от физики, а целенаправленный полёт).
+	_check("патрулирует — сместился по X, а не стоит истуканом",
+		absf(lone.global_position.x - x0) > 100.0,
+		"было x=%.0f, стало x=%.0f" % [x0, lone.global_position.x])
 	await _clear_scene([lone] as Array[Ship])
+
+
+## Обзор ~90° (devlog §55, по прямой просьбе заказчика): цель точно ЗА спиной
+## (вне конуса), хоть и вплотную по расстоянию и без препятствий, не должна
+## быть видна — бот не имеет права "знать" её магически.
+func _test_fov() -> void:
+	print("\n-- обзор: не видит цель за спиной --")
+	await _build_terrain()
+	var watcher := _make_bot(Vector2(600, 200), 41)
+	var behind := _make_bot(Vector2(600, 260), 42)  # строго ПОД watcher
+	_wire([watcher, behind] as Array[Ship])
+	watcher.aim_angle = 0.0  # нос строго вверх — цель снизу-сзади, вне конуса
+	await get_tree().physics_frame
+
+	_check("цель за спиной вне конуса обзора (_can_see -> false)",
+		not watcher.input._can_see(behind))
+
+	# Цель ПЕРЕД носом, тот же угол от вертикали — обязана быть видна.
+	var ahead := _make_bot(Vector2(600, 140), 43)  # строго НАД watcher
+	_wire([watcher, ahead] as Array[Ship])
+	await get_tree().physics_frame
+	_check("цель перед носом видна (_can_see -> true)",
+		watcher.input._can_see(ahead))
+
+	await _clear_scene([watcher, behind, ahead] as Array[Ship])
+
+
+## Память (devlog §55): цель была видна, потом пропала из конуса — бот ещё
+## какое-то время "помнит"/предполагает её позицию (не бросает цель мгновенно
+## при первом же кадре без прямой видимости), но после settings.memory_time
+## признаёт её потерянной.
+func _test_memory() -> void:
+	print("\n-- память о цели: не бросает мгновенно, но и не помнит вечно --")
+	await _build_terrain()
+	var bot := _make_bot(Vector2(600, 200), 51)
+	var enemy := _make_bot(Vector2(800, 200), 52)
+	_wire([bot, enemy] as Array[Ship])
+	bot.aim_angle = AI_INPUT._angle_of((enemy.global_position - bot.global_position).normalized())
+	enemy.freeze = true
+	await get_tree().physics_frame
+
+	var ai := bot.input as AIInput
+	ai._update_memory(0.0)
+	_check("цель видна и запомнена (age=0)",
+		ai._memory.has(enemy) and ai._memory[enemy]["age"] == 0.0)
+
+	# Разворачиваем нос ровно на 180° — цель гарантированно выходит из
+	# конуса ±45°, но должна остаться в памяти, пока age <= memory_time.
+	bot.aim_angle = wrapf(bot.aim_angle + PI, -PI, PI)
+	var half_memory := ai.settings.memory_time * 0.5
+	ai._update_memory(half_memory)
+	_check("цель вне конуса, но ещё в пределах memory_time — не забыта",
+		ai._memory.has(enemy) and ai._memory[enemy]["age"] == half_memory,
+		"age=%.2f" % ai._memory.get(enemy, {}).get("age", -1.0))
+
+	ai._update_memory(ai.settings.memory_time)  # суммарно заметно больше memory_time
+	var mem: Dictionary = ai._memory.get(enemy, {})
+	var expired: bool = mem.is_empty() or float(mem["age"]) > ai.settings.memory_time
+	_check("а вот теперь — по прошествии memory_time — цель признана потерянной",
+		expired, "age=%.2f, memory_time=%.2f" % [
+			float(mem.get("age", -1.0)), ai.settings.memory_time])
+
+	await _clear_scene([bot, enemy] as Array[Ship])
 
 
 ## Прицельная математика отдельно от полёта: неподвижная цель прямо по

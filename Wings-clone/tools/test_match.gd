@@ -136,6 +136,23 @@ func _run() -> void:
 	GameRules.reset()   # гигиена — не протекать в другие headless-прогоны
 
 	# 7. Разнесение спавнов: pick_spawns() не сажает корабли друг на друга.
+	# ОТДЕЛЬНЫЙ террейн, а не общий _terrain (400x400 сплошной Земли, нужен
+	# выше для крэш-тестов): с фиксом devlog §55 (find_clear_spawn требует
+	# открытое небо над точкой — иначе LiveSand обрушит землю обратно на
+	# корабль) в сплошном без единого просвета блоке ни одна попытка не
+	# проходит, обе точки честно уходят в один и тот же детерминированный
+	# fallback — это и есть новое ожидаемое поведение ДЛЯ ТАКОГО террейна, не
+	# регрессия; для проверки "точки реально разные" нужно место, где им есть
+	# где быть разными.
+	var open_terrain := Terrain.new()
+	open_terrain.palette = PALETTE
+	add_child(open_terrain)
+	var open_vis := Image.create(800, 400, false, Image.FORMAT_RGBA8)
+	open_vis.fill(Color(0, 0, 0, 0))  # alpha=0 -> целиком открытое небо
+	open_terrain.load_level(open_vis)
+	await get_tree().physics_frame
+	m.terrain = open_terrain
+
 	var spawns := m.pick_spawns(2)
 	_check("pick_spawns даёт 2 разные точки",
 		spawns[0].distance_to(spawns[1]) > 1.0,
